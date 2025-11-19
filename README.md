@@ -18,7 +18,7 @@ detector_vehiculos/
 ├── models/              # Modelos de IA
 │   ├── car_detector.pt       # Modelo YOLO de detección de autos
 │   └── plate_detector.pt     # Modelo YOLO de detección de placas
-├── notebooks/           # Notebooks de entrenamiento (Fase 2)
+├── notebooks/           # Notebooks de entrenamiento 
 ├── src/                 # Codigo fuente
 │   ├── __init__.py
 │   ├── pipeline.py      # Orquestador principal
@@ -35,6 +35,14 @@ detector_vehiculos/
 
 - Python 3.8 o superior
 - pip (gestor de paquetes de Python)
+
+#### Colocar los modelos en la carpeta /models
+| Modelo | Descarga |
+| --- | --- |
+| Detector de marcas | https://drive.google.com/file/d/1JcKxU9Bz80XMNu2hd7oeYr7MdeeysyGg/view?usp=drive_link |
+| Detector de autos | https://drive.google.com/file/d/1L6cJo8qc3bneezpsXarUuLzs-hMHTFkV/view?usp=drive_link |
+| Detector de placas(sin lectura) | https://drive.google.com/file/d/1nagx_2bYU8iuFM-pGYkdgVaP7eZdOX-8/view?usp=drive_link |
+
 
 ### Pasos de Instalacion
 
