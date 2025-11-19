@@ -1,4 +1,4 @@
-# Detector de Vehiculos - Peru
+# Detector de Vehiculos Multimodal
 
 Sistema de deteccion automatica de vehiculos con reconocimiento de placas, marca y color.
 
@@ -147,9 +147,9 @@ Una vez completadas las fases anteriores, se creara un archivo .exe portable usa
 
 ## Notas Tecnicas
 
-### Formato de Placas Peruanas
+### Formato de Placas 
 
-El sistema esta optimizado para reconocer placas peruanas con formato:
+El sistema esta optimizado para reconocer placas con formato:
 - Alfanumericas
 - Aspect ratio aproximado 2:1 a 4:1
 - Ubicacion tipica en parte inferior del vehiculo

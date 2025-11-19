@@ -1,0 +1,6 @@
+# Este archivo mantiene la carpeta models/ en Git aunque esté vacía
+# Los modelos .pt están en .gitignore por ser archivos grandes
+# Descarga los modelos separadamente y colócalos aquí:
+# - car_detector.pt
+# - plate_detector.pt
+# - brand_detector.pt
