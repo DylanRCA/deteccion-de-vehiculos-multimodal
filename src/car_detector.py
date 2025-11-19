@@ -4,12 +4,13 @@ import cv2
 
 
 class CarDetector:
-    def __init__(self, model_path=None):
+    def __init__(self, model_path=None, min_confidence=0.4):
         """
         Inicializa el detector de vehiculos usando YOLOv8.
         
         Args:
             model_path (str): Ruta al modelo YOLO. Si es None, usa yolov8n.pt por defecto.
+            min_confidence (float): Confianza minima para aceptar detecciones (0.0-1.0)
         """
         if model_path is None:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,12 +28,18 @@ class CarDetector:
         print(f"[DEBUG] Cargando modelo YOLO: {model_path}")
         self.model = YOLO(model_path)
         print(f"[DEBUG] Modelo YOLO cargado. Clases: {self.model.names}")
+        
+        # Configuracion
+        self.min_confidence = min_confidence
+        print(f"[DEBUG] Confianza minima para deteccion de vehiculos: {self.min_confidence}")
+        
         # Clases de vehiculos en COCO dataset
         self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
         
     def detect_vehicles(self, image):
         """
         Detecta vehiculos en una imagen.
+        Solo retorna vehiculos con confianza >= min_confidence.
         
         Args:
             image: Imagen en formato numpy array (BGR)
@@ -48,15 +55,22 @@ class CarDetector:
             boxes = result.boxes
             for box in boxes:
                 class_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+                
+                # Filtrar por confianza minima
+                if confidence < self.min_confidence:
+                    print(f"[DEBUG] Vehiculo rechazado por baja confianza: {confidence:.2f} < {self.min_confidence}")
+                    continue
                 
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                confidence = float(box.conf[0])
                 
                 detections.append({
                     'bbox': [int(x1), int(y1), int(x2), int(y2)],
                     'confidence': confidence,
                     'class': result.names[class_id]
                 })
+                
+                print(f"[DEBUG] Vehiculo detectado: {result.names[class_id]} con confianza {confidence:.2f}")
         
         return detections
     

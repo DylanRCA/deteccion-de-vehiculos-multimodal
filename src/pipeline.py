@@ -5,12 +5,15 @@ from .classifier import VehicleClassifier
 
 
 class VehicleDetectionPipeline:
-    def __init__(self):
+    def __init__(self, car_min_confidence=0.4):
         """
         Inicializa el pipeline completo de deteccion de vehiculos.
         Orquesta todos los modelos: detector, OCR y clasificador.
+        
+        Args:
+            car_min_confidence (float): Confianza minima para deteccion de vehiculos (0.0-1.0)
         """
-        self.car_detector = CarDetector()
+        self.car_detector = CarDetector(min_confidence=car_min_confidence)
         self.plate_recognizer = PlateRecognizer()
         self.vehicle_classifier = VehicleClassifier()
     
@@ -57,8 +60,9 @@ class VehicleDetectionPipeline:
                 'class': detection['class'],
                 'Placa': 'SI' if has_plate else 'NO',  # "SI" o "NO"
                 'Numero-Placa': plate_text if has_plate else '------',  # Número o "------"
-                'plate_bbox': plate_result['bbox'],  # Para dibujar
+                'plate_bbox': plate_result['bbox'],  # Para dibujar cuadro amarillo
                 'brand': classification['brand'],
+                'brand_bbox': classification['brand_bbox'],  # Para dibujar cuadro del logo
                 'color': classification['color']
             }
             
@@ -103,23 +107,22 @@ class VehicleDetectionPipeline:
                 cv2.rectangle(output, (abs_px1, abs_py1), (abs_px2, abs_py2), 
                             (0, 255, 255), 2)  # Amarillo para placa
             
-            # Preparar texto de informacion
+            # Dibujar cuadro del logo de marca si fue detectado (azul)
+            if det['brand_bbox'] is not None and det['brand'] != 'DESCONOCIDA':
+                bx1, by1, bx2, by2 = det['brand_bbox']
+                # Convertir coordenadas relativas a absolutas
+                abs_bx1 = vx1 + bx1
+                abs_by1 = vy1 + by1
+                abs_bx2 = vx1 + bx2
+                abs_by2 = vy1 + by2
+                
+                cv2.rectangle(output, (abs_bx1, abs_by1), (abs_bx2, abs_by2), 
+                            (255, 0, 0), 2)  # Azul para logo de marca
+            
+            # Dibujar ID del vehiculo
             info_lines = [
                 f"ID: {det['id']}",
-                f"Tipo: {det['class']}",
             ]
-            
-            # Agregar informacion de placa
-            if det['Placa'] == 'SI':
-                info_lines.append(f"Placa: {det['Numero-Placa']}")
-            else:
-                info_lines.append("Placa: NO DETECTADA")
-            
-            # Agregar color y marca
-            info_lines.extend([
-                f"Color: {det['color']}",
-                f"Marca: {det['brand']}"
-            ])
             
             # Dibujar fondo para el texto
             text_y = vy1 - 10

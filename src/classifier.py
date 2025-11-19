@@ -91,15 +91,22 @@ class VehicleClassifier:
     def classify_brand(self, vehicle_image):
         """
         Detecta la marca del vehiculo usando YOLO.
+        Retorna la marca y el bbox del logo detectado.
         
         Args:
             vehicle_image: Imagen del vehiculo recortada (numpy array BGR)
             
         Returns:
-            str: Marca del vehiculo
+            dict: {
+                'brand': str,           # Nombre de la marca
+                'brand_bbox': list|None # [x1, y1, x2, y2] o None
+            }
         """
         if self.brand_detector is None:
-            return "DESCONOCIDA"
+            return {
+                'brand': "DESCONOCIDA",
+                'brand_bbox': None
+            }
         
         try:
             # Detectar logos con YOLO
@@ -123,14 +130,34 @@ class VehicleClassifier:
                 
                 if class_id in self.brand_names:
                     brand = self.brand_names[class_id]
+                    
+                    # Extraer bbox
+                    x1, y1, x2, y2 = best_detection.xyxy[0].cpu().numpy().astype(int)
+                    
+                    # Asegurar que las coordenadas esten dentro de la imagen
+                    h, w = vehicle_image.shape[:2]
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+                    
+                    bbox = [x1, y1, x2, y2]
+                    
                     print(f"[DEBUG] Logo detectado: {brand} (confianza: {best_conf:.2f})")
-                    return brand
+                    return {
+                        'brand': brand,
+                        'brand_bbox': bbox
+                    }
             
-            return "DESCONOCIDA"
+            return {
+                'brand': "DESCONOCIDA",
+                'brand_bbox': None
+            }
             
         except Exception as e:
             print(f"[ERROR] Error al detectar logo: {str(e)}")
-            return "DESCONOCIDA"
+            return {
+                'brand': "DESCONOCIDA",
+                'brand_bbox': None
+            }
     
     def classify_color(self, vehicle_image):
         """
@@ -153,12 +180,17 @@ class VehicleClassifier:
             vehicle_image: Imagen del vehiculo recortada (numpy array BGR)
             
         Returns:
-            dict: {'brand': str, 'color': str}
+            dict: {
+                'brand': str, 
+                'brand_bbox': list|None,  # NUEVO: bbox del logo
+                'color': str
+            }
         """
-        brand = self.classify_brand(vehicle_image)
+        brand_result = self.classify_brand(vehicle_image)
         color = self.classify_color(vehicle_image)
         
         return {
-            'brand': brand,
+            'brand': brand_result['brand'],
+            'brand_bbox': brand_result['brand_bbox'],  # NUEVO
             'color': color
         }
