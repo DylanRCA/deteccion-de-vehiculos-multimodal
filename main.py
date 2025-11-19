@@ -338,6 +338,7 @@ class VehicleDetectorApp:
     def _update_info_text(self, detections):
         """
         Actualiza el area de texto con informacion de detecciones.
+        Formato: Placa: SI/NO, Numero-Placa: XXXXX/------
         """
         self.info_text.delete("1.0", "end")
         
@@ -345,15 +346,26 @@ class VehicleDetectorApp:
             self.info_text.insert("1.0", "No se detectaron vehiculos")
             return
         
-        info = f"Vehiculos detectados: {len(detections)}\n\n"
+        # Contar vehiculos con placas legibles
+        vehicles_with_plates = sum(1 for det in detections if det['Placa'] == 'SI')
+        
+        info = f"Vehiculos detectados: {len(detections)}\n"
+        info += f"Placas legibles: {vehicles_with_plates}\n\n"
         
         for det in detections:
-            info += f"--- Vehiculo {det['id']} ---\n"
+            info += f"{'='*25}\n"
+            info += f"VEHICULO #{det['id']}\n"
+            info += f"{'='*25}\n"
             info += f"Tipo: {det['class']}\n"
-            info += f"Placa: {det['plate']}\n"
-            info += f"Color: {det['color']}\n"
-            info += f"Marca: {det['brand']}\n"
             info += f"Confianza: {det['confidence']:.2f}\n\n"
+            
+            # Formato exacto solicitado
+            info += f"Placa: {det['Placa']}\n"
+            info += f"Numero-Placa: {det['Numero-Placa']}\n\n"
+            
+            # Caracteristicas del vehiculo
+            info += f"Color: {det['color']}\n"
+            info += f"Marca: {det['brand']}\n\n"
         
         self.info_text.insert("1.0", info)
     

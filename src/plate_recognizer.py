@@ -32,10 +32,10 @@ class PlateRecognizer:
         self.reader = easyocr.Reader(['es', 'en'], gpu=False)
         print("[DEBUG] EasyOCR inicializado correctamente")
         
-        # Configuración de validación
-        self.min_confidence = 0.4  # Confianza mínima del OCR
-        self.min_plate_length = 5  # Longitud mínima de caracteres
-        self.max_plate_length = 10  # Longitud máxima de caracteres
+        # Configuración de validación (umbrales más permisivos)
+        self.min_confidence = 0.2  # Confianza mínima del OCR (reducido)
+        self.min_plate_length = 4  # Longitud mínima de caracteres (reducido)
+        self.max_plate_length = 12  # Longitud máxima de caracteres (aumentado)
     
     def detect_plate_region_yolo_with_bbox(self, vehicle_image):
         """
@@ -68,8 +68,8 @@ class PlateRecognizer:
                     best_conf = conf
                     best_box = box
             
-            # Umbral de confianza más estricto
-            if best_box is not None and best_conf > 0.35:
+            # Umbral de confianza más permisivo
+            if best_box is not None and best_conf > 0.25:
                 x1, y1, x2, y2 = best_box.xyxy[0].cpu().numpy().astype(int)
                 
                 # Asegurar que las coordenadas están dentro de la imagen
@@ -179,6 +179,7 @@ class PlateRecognizer:
     def validate_plate_text(self, text, confidence):
         """
         Valida si el texto reconocido es una placa válida.
+        Validación permisiva para maximizar detección.
         
         Args:
             text (str): Texto reconocido
@@ -194,23 +195,20 @@ class PlateRecognizer:
         if len(text) < self.min_plate_length or len(text) > self.max_plate_length:
             return False
         
-        # Validación 2: Confianza mínima
+        # Validación 2: Confianza mínima (muy baja para ser permisivo)
         if confidence < self.min_confidence:
             return False
         
-        # Validación 3: Debe contener al menos algunos números
-        digit_count = sum(c.isdigit() for c in text)
-        if digit_count < 2:
+        # Validación 3: Debe contener al menos UN número O una letra
+        has_digit = any(c.isdigit() for c in text)
+        has_letter = any(c.isalpha() for c in text)
+        
+        if not (has_digit or has_letter):
             return False
         
-        # Validación 4: Debe contener al menos algunas letras
-        letter_count = sum(c.isalpha() for c in text)
-        if letter_count < 2:
-            return False
-        
-        # Validación 5: No debe tener muchos espacios o caracteres especiales
+        # Validación 4: Al menos 50% alfanumérico
         alnum_count = sum(c.isalnum() for c in text)
-        if alnum_count < len(text) * 0.7:
+        if alnum_count < len(text) * 0.5:
             return False
         
         return True

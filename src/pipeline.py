@@ -39,20 +39,25 @@ class VehicleDetectionPipeline:
             # Recortar vehiculo de la imagen original
             vehicle_crop = image[y1:y2, x1:x2]
             
-            # 3. Reconocer placa (ahora retorna dict con texto y bbox)
+            # 3. Reconocer placa (retorna dict con texto y bbox)
             plate_result = self.plate_recognizer.recognize_plate(vehicle_crop)
             
             # 4. Clasificar marca y color
             classification = self.vehicle_classifier.classify(vehicle_crop)
             
-            # Guardar resultados
+            # Determinar estado de la placa
+            plate_text = plate_result['text']
+            has_plate = plate_text not in ["SIN PLACA", "NO DETECTADA"]
+            
+            # Guardar resultados con nombres específicos solicitados
             vehicle_info = {
                 'id': idx + 1,
                 'bbox': detection['bbox'],
                 'confidence': detection['confidence'],
                 'class': detection['class'],
-                'plate': plate_result['text'],
-                'plate_bbox': plate_result['bbox'],  # Bbox relativo al crop del vehiculo
+                'Placa': 'SI' if has_plate else 'NO',  # "SI" o "NO"
+                'Numero-Placa': plate_text if has_plate else '------',  # Número o "------"
+                'plate_bbox': plate_result['bbox'],  # Para dibujar
                 'brand': classification['brand'],
                 'color': classification['color']
             }
@@ -87,7 +92,7 @@ class VehicleDetectionPipeline:
             cv2.rectangle(output, (vx1, vy1), (vx2, vy2), (0, 255, 0), 2)
             
             # Dibujar cuadro de la placa si fue detectada (amarillo)
-            if det['plate_bbox'] is not None:
+            if det['plate_bbox'] is not None and det['Placa'] == 'SI':
                 px1, py1, px2, py2 = det['plate_bbox']
                 # Convertir coordenadas relativas a absolutas
                 abs_px1 = vx1 + px1
@@ -102,10 +107,19 @@ class VehicleDetectionPipeline:
             info_lines = [
                 f"ID: {det['id']}",
                 f"Tipo: {det['class']}",
-                f"Placa: {det['plate']}",
+            ]
+            
+            # Agregar informacion de placa
+            if det['Placa'] == 'SI':
+                info_lines.append(f"Placa: {det['Numero-Placa']}")
+            else:
+                info_lines.append("Placa: NO DETECTADA")
+            
+            # Agregar color y marca
+            info_lines.extend([
                 f"Color: {det['color']}",
                 f"Marca: {det['brand']}"
-            ]
+            ])
             
             # Dibujar fondo para el texto
             text_y = vy1 - 10
