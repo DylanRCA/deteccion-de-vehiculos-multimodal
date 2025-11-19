@@ -13,6 +13,7 @@ models/*.pt
 models/*.pth
 models/*.h5
 models/*.onnx
+models/*.zip
 
 # Datos de prueba grandes
 data/*.mp4
