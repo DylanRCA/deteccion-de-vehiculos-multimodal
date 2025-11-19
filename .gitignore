@@ -16,6 +16,10 @@ models/*.onnx
 models/*.zip
 
 # Datos de prueba grandes
+*.mp4
+*.avi
+*.mov
+*.zip
 data/*.mp4
 data/*.avi
 data/*.mov
