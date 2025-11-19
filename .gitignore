@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Modelos entrenados
+models/*.pt
+models/*.pth
+models/*.h5
+models/*.onnx
+
+# Datos de prueba grandes
+data/*.mp4
+data/*.avi
+data/*.mov
+
+# Notebooks
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Logs
+*.log
+
+# Cache de EasyOCR
+.EasyOCR/

@@ -1,0 +1,7 @@
+opencv-python-headless
+customtkinter
+ultralytics
+easyocr
+torch
+torchvision
+Pillow
