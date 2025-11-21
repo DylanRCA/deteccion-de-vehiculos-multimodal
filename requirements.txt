@@ -5,3 +5,6 @@ easyocr
 torch
 torchvision
 Pillow
+lap>=0.4.0
+filterpy>=1.4.5
+scipy>=1.7.0

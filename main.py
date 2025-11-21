@@ -5,6 +5,7 @@ from PIL import Image
 import threading
 import os
 import sys
+import time
 
 # Agregar src al path para importar modulos
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -128,6 +129,13 @@ class VehicleDetectorApp:
             height=300
         )
         self.info_text.pack(pady=10, padx=20)
+
+        # Barra de progreso para procesamiento de video
+        self.progress = ctk.CTkProgressBar(control_frame, width=200)
+        self.progress.set(0)
+        self.progress.pack(pady=5, padx=20)
+        self.progress_label = ctk.CTkLabel(control_frame, text="")
+        self.progress_label.pack(pady=(0, 10))
         
         # Estado
         self.status_label = ctk.CTkLabel(
@@ -200,13 +208,20 @@ class VehicleDetectorApp:
         """
         try:
             cap = cv2.VideoCapture(video_path)
-            
+
             if not cap.isOpened():
                 self.status_label.configure(text="Error al abrir video")
                 return
             
             self.status_label.configure(text="Procesando video...")
-            
+
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            annotated_frames = []
+            frame_idx = 0
+            self.progress.set(0)
+            self.progress_label.configure(text="0%")
+
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
@@ -214,16 +229,33 @@ class VehicleDetectorApp:
                 
                 if self.pipeline:
                     result = self.pipeline.process_video_frame(frame)
-                    self._display_image(result['annotated_image'])
-                    self._update_info_text(result['detections'])
+                    annotated = result['annotated_image']
+                    detections = result['detections']
                 else:
-                    self._display_image(frame)
-                
-                # Control de velocidad
-                cv2.waitKey(30)
+                    annotated = frame
+                    detections = []
+
+                annotated_frames.append(annotated)
+                frame_idx += 1
+
+                if total_frames:
+                    progress = frame_idx / total_frames
+                    self.progress.set(progress)
+                    self.progress_label.configure(text=f"{progress*100:5.1f}%")
+
+                # Actualiza info de vez en cuando sin bloquear
+                if frame_idx % 5 == 0 and self.pipeline:
+                    self._update_info_text(detections)
+
+                # Pausa minima para no saturar CPU (sin HighGUI)
+                time.sleep(0.001)
             
             cap.release()
-            self.status_label.configure(text="Video procesado")
+            self.progress.set(1)
+            self.progress_label.configure(text="100%")
+            self.status_label.configure(text="Video procesado, reproduciendo...")
+
+            self._play_processed_frames(annotated_frames, fps)
             
         except Exception as e:
             self.status_label.configure(text=f"Error en video: {str(e)}")
@@ -266,7 +298,7 @@ class VehicleDetectorApp:
                 else:
                     self._display_image(frame)
                 
-                cv2.waitKey(30)
+                time.sleep(0.03)
             
             self.video_capture.release()
             self.status_label.configure(text="Camara detenida")
@@ -368,6 +400,25 @@ class VehicleDetectorApp:
             info += f"Marca: {det['brand']}\n\n"
         
         self.info_text.insert("1.0", info)
+
+    def _play_processed_frames(self, frames, fps):
+        """
+        Reproduce en la UI la lista de frames procesados respetando el FPS.
+        """
+        if not frames:
+            self.status_label.configure(text="Sin frames para reproducir")
+            return
+
+        delay_ms = int(1000 / fps) if fps and fps > 0 else 33
+
+        def show_frame(i):
+            if i >= len(frames):
+                self.status_label.configure(text="Reproduccion finalizada")
+                return
+            self._display_image(frames[i])
+            self.root.after(delay_ms, lambda: show_frame(i + 1))
+
+        show_frame(0)
     
     def run(self):
         """
