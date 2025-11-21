@@ -1,7 +1,9 @@
 import cv2
+import config
 from .car_detector import CarDetector
 from .plate_recognizer import PlateRecognizer
 from .classifier import VehicleClassifier
+from .tracker import VehicleTracker
 
 
 class VehicleDetectionPipeline:
@@ -16,6 +18,11 @@ class VehicleDetectionPipeline:
         self.car_detector = CarDetector(min_confidence=car_min_confidence)
         self.plate_recognizer = PlateRecognizer()
         self.vehicle_classifier = VehicleClassifier()
+        self.tracker = VehicleTracker(
+            max_age=getattr(config, "TRACKING_MAX_AGE", 30),
+            min_hits=getattr(config, "TRACKING_MIN_HITS", 3),
+            iou_threshold=getattr(config, "TRACKING_IOU_THRESHOLD", 0.3),
+        )
     
     def process_image(self, image):
         """
@@ -33,28 +40,35 @@ class VehicleDetectionPipeline:
         # 1. Detectar vehiculos
         vehicle_detections = self.car_detector.detect_vehicles(image)
         
+        # 2. Actualizar tracker para mantener IDs persistentes
+        track_outputs = self.tracker.update(vehicle_detections)
+
         results = []
         
-        # 2. Procesar cada vehiculo detectado
+        # 3. Procesar cada vehiculo detectado
         for idx, detection in enumerate(vehicle_detections):
             x1, y1, x2, y2 = detection['bbox']
             
             # Recortar vehiculo de la imagen original
             vehicle_crop = image[y1:y2, x1:x2]
             
-            # 3. Reconocer placa (retorna dict con texto y bbox)
+            # 4. Reconocer placa (retorna dict con texto y bbox)
             plate_result = self.plate_recognizer.recognize_plate(vehicle_crop)
             
-            # 4. Clasificar marca y color
+            # 5. Clasificar marca y color
             classification = self.vehicle_classifier.classify(vehicle_crop)
             
             # Determinar estado de la placa
             plate_text = plate_result['text']
             has_plate = plate_text not in ["SIN PLACA", "NO DETECTADA"]
+
+            # Obtener ID persistente del tracker usando IoU
+            assigned_id = self._assign_track_id(detection, track_outputs)
+            detection_id = assigned_id if assigned_id is not None else idx + 1
             
             # Guardar resultados con nombres específicos solicitados
             vehicle_info = {
-                'id': idx + 1,
+                'id': detection_id,
                 'bbox': detection['bbox'],
                 'confidence': detection['confidence'],
                 'class': detection['class'],
@@ -142,6 +156,23 @@ class VehicleDetectionPipeline:
                 text_y -= (text_size[1] + 8)
         
         return output
+
+    def _assign_track_id(self, detection, tracks):
+        """
+        Asigna el ID de track a una deteccion actual usando IoU.
+        Retorna None si no hay match sobre el umbral.
+        """
+        best_iou = 0.0
+        best_id = None
+        for track in tracks:
+            iou = self.tracker._iou(detection['bbox'], track['bbox'])
+            if iou > best_iou:
+                best_iou = iou
+                best_id = track['id']
+
+        if best_id is not None and best_iou >= self.tracker.iou_threshold:
+            return best_id
+        return None
     
     def process_video_frame(self, frame):
         """
