@@ -80,11 +80,11 @@ detector_vehiculos/
 
 Colocar los modelos en la carpeta `/models`:
 
-| Modelo | Descarga |
-| --- | --- |
-| Detector de marcas | [Google Drive](https://drive.google.com/file/d/1JcKxU9Bz80XMNu2hd7oeYr7MdeeysyGg/view?usp=drive_link) |
-| Detector de autos | [Google Drive](https://drive.google.com/file/d/1L6cJo8qc3bneezpsXarUuLzs-hMHTFkV/view?usp=drive_link) |
-| Detector de placas | [Google Drive](https://drive.google.com/file/d/1nagx_2bYU8iuFM-pGYkdgVaP7eZdOX-8/view?usp=drive_link) |
+| Modelo | Descarga | Datasets |
+| --- | --- | --- |
+| Detector de marcas | [Google Drive](https://drive.google.com/file/d/1JcKxU9Bz80XMNu2hd7oeYr7MdeeysyGg/view?usp=drive_link) | - https://universe.roboflow.com/guiandradedev/car-brand-ux3ap <br> - https://universe.roboflow.com/car-brand/car-brand-6ezl0 |
+| Detector de autos | [Google Drive](https://drive.google.com/file/d/1L6cJo8qc3bneezpsXarUuLzs-hMHTFkV/view?usp=drive_link) | https://universe.roboflow.com/drink-tracker/car-detection-pn2gk |
+| Detector de placas | [Google Drive](https://drive.google.com/file/d/1nagx_2bYU8iuFM-pGYkdgVaP7eZdOX-8/view?usp=drive_link) | https://universe.roboflow.com/licence-plate-3jqkb/license-plate-az47f |
 
 ### Pasos de Instalacion
 

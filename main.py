@@ -6,6 +6,7 @@ import threading
 import os
 import sys
 import time
+import traceback
 
 # Agregar src al path para importar modulos
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -18,6 +19,10 @@ class VehicleDetectorApp:
         """
         Inicializa la aplicacion de deteccion de vehiculos.
         """
+        print("\n" + "="*80)
+        print("[APP-INIT] Iniciando aplicacion de deteccion de vehiculos")
+        print("="*80 + "\n")
+        
         self.root = ctk.CTk()
         self.root.title("Detector de Vehiculos - Peru")
         self.root.geometry("1200x800")
@@ -43,15 +48,25 @@ class VehicleDetectorApp:
         Inicializa el pipeline de procesamiento en background.
         """
         self.status_label.configure(text="Cargando modelos... (puede tardar 30-60 seg)")
+        
         try:
-            print("[DEBUG] Iniciando carga del pipeline...")
-            self.pipeline = VehicleDetectionPipeline()
-            print("[DEBUG] Pipeline cargado exitosamente")
+            print("\n[APP-INIT] Iniciando carga del pipeline...")
+            
+            # IMPORTANTE: Puedes desactivar BD y eventos aqui si hay problemas
+            # enable_database=False desactiva completamente la base de datos
+            # enable_events=False desactiva completamente los eventos
+            
+            self.pipeline = VehicleDetectionPipeline(
+                enable_database=True,   # Cambiar a False para desactivar BD
+                enable_events=True      # Cambiar a False para desactivar eventos
+            )
+            
+            print("[APP-INIT] Pipeline cargado exitosamente\n")
             self.status_label.configure(text="✓ Modelos cargados. Listo para usar.")
+            
         except Exception as e:
-            import traceback
             error_msg = traceback.format_exc()
-            print(f"[ERROR] Error completo al cargar modelos:\n{error_msg}")
+            print(f"\n[APP-ERROR] Error completo al cargar modelos:\n{error_msg}\n")
             self.status_label.configure(text=f"✗ Error: Ver consola para detalles")
             messagebox.showerror("Error de Carga", 
                                f"Error al cargar modelos:\n{str(e)}\n\nRevisa la consola para mas detalles.")
@@ -161,6 +176,8 @@ class VehicleDetectorApp:
         """
         Carga una imagen desde el sistema de archivos.
         """
+        print("\n[APP-IMAGE] Usuario seleccionando imagen...")
+        
         file_path = filedialog.askopenfilename(
             title="Seleccionar Imagen",
             filetypes=[
@@ -171,22 +188,32 @@ class VehicleDetectorApp:
         
         if file_path:
             try:
+                print(f"[APP-IMAGE] Cargando imagen: {file_path}")
                 self.current_image = cv2.imread(file_path)
+                
                 if self.current_image is None:
+                    print(f"[APP-ERROR] No se pudo cargar la imagen")
                     messagebox.showerror("Error", "No se pudo cargar la imagen")
                     return
+                
+                print(f"[APP-IMAGE] Imagen cargada - Dimensiones: {self.current_image.shape}")
                 
                 self._display_image(self.current_image)
                 self.info_text.delete("1.0", "end")
                 self.info_text.insert("1.0", "Imagen cargada. Presione 'Procesar'.")
                 self.status_label.configure(text="Imagen cargada")
+                
             except Exception as e:
+                error_msg = traceback.format_exc()
+                print(f"[APP-ERROR] Error al cargar imagen:\n{error_msg}")
                 messagebox.showerror("Error", f"Error al cargar imagen: {str(e)}")
     
     def _load_video(self):
         """
         Carga y procesa un video desde el sistema de archivos.
         """
+        print("\n[APP-VIDEO] Usuario seleccionando video...")
+        
         file_path = filedialog.askopenfilename(
             title="Seleccionar Video",
             filetypes=[
@@ -196,6 +223,11 @@ class VehicleDetectorApp:
         )
         
         if file_path:
+            # IMPORTANTE: Resetear pipeline antes de procesar nuevo video
+            if self.pipeline:
+                self.pipeline.reset()
+            
+            print(f"[APP-VIDEO] Iniciando procesamiento de video: {file_path}")
             threading.Thread(
                 target=self._process_video,
                 args=(file_path,),
@@ -206,58 +238,85 @@ class VehicleDetectorApp:
         """
         Procesa un video frame por frame.
         """
+        print(f"\n[APP-VIDEO] Abriendo video: {video_path}")
+        
         try:
             cap = cv2.VideoCapture(video_path)
 
             if not cap.isOpened():
+                print("[APP-ERROR] No se pudo abrir el video")
                 self.status_label.configure(text="Error al abrir video")
                 return
             
-            self.status_label.configure(text="Procesando video...")
-
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            
+            print(f"[APP-VIDEO] Video abierto - Total frames: {total_frames}, FPS: {fps}")
+            
+            self.status_label.configure(text="Procesando video...")
+            
             annotated_frames = []
             frame_idx = 0
             self.progress.set(0)
             self.progress_label.configure(text="0%")
 
+            print("[APP-VIDEO] Iniciando procesamiento frame por frame...\n")
+            
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
-                if self.pipeline:
-                    result = self.pipeline.process_video_frame(frame)
-                    annotated = result['annotated_image']
-                    detections = result['detections']
-                else:
-                    annotated = frame
-                    detections = []
-
-                annotated_frames.append(annotated)
                 frame_idx += 1
+                
+                # Procesar frame
+                try:
+                    if self.pipeline:
+                        result = self.pipeline.process_video_frame(frame)
+                        annotated = result['annotated_image']
+                        detections = result['detections']
+                    else:
+                        print(f"[APP-WARNING] Pipeline no inicializado en frame {frame_idx}")
+                        annotated = frame
+                        detections = []
+                    
+                    annotated_frames.append(annotated)
+                    
+                except Exception as e:
+                    print(f"[APP-ERROR] Error procesando frame {frame_idx}: {str(e)}")
+                    # Continuar con frame original
+                    annotated_frames.append(frame.copy())
 
+                # Actualizar progreso
                 if total_frames:
                     progress = frame_idx / total_frames
                     self.progress.set(progress)
                     self.progress_label.configure(text=f"{progress*100:5.1f}%")
 
-                # Actualiza info de vez en cuando sin bloquear
+                # Actualizar info cada 5 frames
                 if frame_idx % 5 == 0 and self.pipeline:
-                    self._update_info_text(detections)
+                    try:
+                        self._update_info_text(detections)
+                    except Exception as e:
+                        print(f"[APP-WARNING] Error actualizando UI: {str(e)}")
 
-                # Pausa minima para no saturar CPU (sin HighGUI)
+                # Pausa minima
                 time.sleep(0.001)
             
             cap.release()
+            
+            print(f"\n[APP-VIDEO] Procesamiento completado - {frame_idx} frames procesados")
+            
             self.progress.set(1)
             self.progress_label.configure(text="100%")
             self.status_label.configure(text="Video procesado, reproduciendo...")
 
+            print("[APP-VIDEO] Iniciando reproduccion...\n")
             self._play_processed_frames(annotated_frames, fps)
             
         except Exception as e:
+            error_msg = traceback.format_exc()
+            print(f"[APP-ERROR] Error critico en procesamiento de video:\n{error_msg}")
             self.status_label.configure(text=f"Error en video: {str(e)}")
     
     def _toggle_camera(self):
@@ -265,10 +324,17 @@ class VehicleDetectorApp:
         Activa o desactiva la camara.
         """
         if not self.camera_active:
+            print("\n[APP-CAMERA] Activando camara...")
+            
+            # IMPORTANTE: Resetear pipeline antes de iniciar camara
+            if self.pipeline:
+                self.pipeline.reset()
+            
             self.camera_active = True
             self.btn_camera.configure(text="Detener Camara", fg_color="red")
             threading.Thread(target=self._camera_loop, daemon=True).start()
         else:
+            print("[APP-CAMERA] Deteniendo camara...")
             self.camera_active = False
             self.btn_camera.configure(text="Activar Camara", fg_color="#1f6aa5")
             if self.video_capture:
@@ -282,28 +348,37 @@ class VehicleDetectorApp:
             self.video_capture = cv2.VideoCapture(0)
             
             if not self.video_capture.isOpened():
+                print("[APP-ERROR] No se pudo abrir la camara")
                 self.status_label.configure(text="No se pudo abrir la camara")
                 self.camera_active = False
                 return
+            
+            print("[APP-CAMERA] Camara abierta, iniciando captura...\n")
             
             while self.camera_active:
                 ret, frame = self.video_capture.read()
                 if not ret:
                     break
                 
-                if self.pipeline:
-                    result = self.pipeline.process_video_frame(frame)
-                    self._display_image(result['annotated_image'])
-                    self._update_info_text(result['detections'])
-                else:
-                    self._display_image(frame)
+                try:
+                    if self.pipeline:
+                        result = self.pipeline.process_video_frame(frame)
+                        self._display_image(result['annotated_image'])
+                        self._update_info_text(result['detections'])
+                    else:
+                        self._display_image(frame)
+                except Exception as e:
+                    print(f"[APP-ERROR] Error en frame de camara: {str(e)}")
                 
                 time.sleep(0.03)
             
             self.video_capture.release()
+            print("[APP-CAMERA] Camara detenida\n")
             self.status_label.configure(text="Camara detenida")
             
         except Exception as e:
+            error_msg = traceback.format_exc()
+            print(f"[APP-ERROR] Error en camara:\n{error_msg}")
             self.status_label.configure(text=f"Error de camara: {str(e)}")
             self.camera_active = False
     
@@ -319,6 +394,7 @@ class VehicleDetectorApp:
             messagebox.showinfo("Info", "Modelos aun cargando...")
             return
         
+        print("\n[APP-PROCESS] Procesando imagen actual...")
         threading.Thread(target=self._process_image_thread, daemon=True).start()
     
     def _process_image_thread(self):
@@ -327,95 +403,116 @@ class VehicleDetectorApp:
         """
         try:
             self.status_label.configure(text="Procesando...")
+            
             result = self.pipeline.process_image(self.current_image)
             
             self._display_image(result['annotated_image'])
             self._update_info_text(result['detections'])
             
+            num_detections = len(result['detections'])
+            print(f"[APP-PROCESS] Procesamiento completado - {num_detections} vehiculos detectados\n")
+            
             self.status_label.configure(
-                text=f"Procesado: {len(result['detections'])} vehiculos detectados"
+                text=f"Procesado: {num_detections} vehiculos detectados"
             )
+            
         except Exception as e:
+            error_msg = traceback.format_exc()
+            print(f"[APP-ERROR] Error en procesamiento:\n{error_msg}")
             self.status_label.configure(text=f"Error: {str(e)}")
     
     def _display_image(self, image):
         """
         Muestra una imagen en el canvas.
         """
-        # Convertir BGR a RGB
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Redimensionar manteniendo aspect ratio
-        max_width = 900
-        max_height = 700
-        h, w = image_rgb.shape[:2]
-        
-        scale = min(max_width/w, max_height/h)
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        
-        image_resized = cv2.resize(image_rgb, (new_w, new_h))
-        
-        # Convertir a formato PIL
-        pil_image = Image.fromarray(image_resized)
-        
-        # Usar CTkImage para evitar warning
-        ctk_image = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, 
-                                  size=(new_w, new_h))
-        
-        # Actualizar canvas
-        self.canvas.configure(image=ctk_image, text="")
-        self.canvas.image = ctk_image  # Mantener referencia
+        try:
+            # Convertir BGR a RGB
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # Redimensionar manteniendo aspect ratio
+            max_width = 900
+            max_height = 700
+            h, w = image_rgb.shape[:2]
+            
+            scale = min(max_width/w, max_height/h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            image_resized = cv2.resize(image_rgb, (new_w, new_h))
+            
+            # Convertir a formato PIL
+            pil_image = Image.fromarray(image_resized)
+            
+            # Usar CTkImage
+            ctk_image = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, 
+                                      size=(new_w, new_h))
+            
+            # Actualizar canvas
+            self.canvas.configure(image=ctk_image, text="")
+            self.canvas.image = ctk_image
+            
+        except Exception as e:
+            print(f"[APP-WARNING] Error mostrando imagen: {str(e)}")
     
     def _update_info_text(self, detections):
         """
         Actualiza el area de texto con informacion de detecciones.
-        Formato: Placa: SI/NO, Numero-Placa: XXXXX/------
         """
-        self.info_text.delete("1.0", "end")
-        
-        if not detections:
-            self.info_text.insert("1.0", "No se detectaron vehiculos")
-            return
-        
-        # Contar vehiculos con placas legibles
-        vehicles_with_plates = sum(1 for det in detections if det['Placa'] == 'SI')
-        
-        info = f"Vehiculos detectados: {len(detections)}\n"
-        info += f"Placas legibles: {vehicles_with_plates}\n\n"
-        
-        for det in detections:
-            info += f"{'='*25}\n"
-            info += f"VEHICULO #{det['id']}\n"
-            info += f"{'='*25}\n"
-            info += f"Tipo: {det['class']}\n"
-            info += f"Confianza: {det['confidence']:.2f}\n\n"
+        try:
+            self.info_text.delete("1.0", "end")
             
-            # Formato exacto solicitado
-            info += f"Placa: {det['Placa']}\n"
-            info += f"Numero-Placa: {det['Numero-Placa']}\n\n"
+            if not detections:
+                self.info_text.insert("1.0", "No se detectaron vehiculos")
+                return
             
-            # Caracteristicas del vehiculo
-            info += f"Color: {det['color']}\n"
-            info += f"Marca: {det['brand']}\n\n"
-        
-        self.info_text.insert("1.0", info)
+            # Contar vehiculos con placas legibles
+            vehicles_with_plates = sum(1 for det in detections if det['Placa'] == 'SI')
+            
+            info = f"Vehiculos detectados: {len(detections)}\n"
+            info += f"Placas legibles: {vehicles_with_plates}\n\n"
+            
+            for det in detections:
+                info += f"{'='*25}\n"
+                info += f"VEHICULO #{det['id']}\n"
+                info += f"{'='*25}\n"
+                info += f"Tipo: {det['class']}\n"
+                info += f"Confianza: {det['confidence']:.2f}\n\n"
+                
+                info += f"Placa: {det['Placa']}\n"
+                info += f"Numero-Placa: {det['Numero-Placa']}\n\n"
+                
+                info += f"Color: {det['color']}\n"
+                info += f"Marca: {det['brand']}\n\n"
+            
+            self.info_text.insert("1.0", info)
+            
+        except Exception as e:
+            print(f"[APP-WARNING] Error actualizando info text: {str(e)}")
 
     def _play_processed_frames(self, frames, fps):
         """
         Reproduce en la UI la lista de frames procesados respetando el FPS.
         """
         if not frames:
+            print("[APP-WARNING] Sin frames para reproducir")
             self.status_label.configure(text="Sin frames para reproducir")
             return
 
         delay_ms = int(1000 / fps) if fps and fps > 0 else 33
+        
+        print(f"[APP-PLAY] Reproduciendo {len(frames)} frames a {fps} FPS")
 
         def show_frame(i):
             if i >= len(frames):
+                print("[APP-PLAY] Reproduccion finalizada\n")
                 self.status_label.configure(text="Reproduccion finalizada")
                 return
-            self._display_image(frames[i])
+            
+            try:
+                self._display_image(frames[i])
+            except Exception as e:
+                print(f"[APP-WARNING] Error mostrando frame {i}: {str(e)}")
+            
             self.root.after(delay_ms, lambda: show_frame(i + 1))
 
         show_frame(0)
@@ -424,6 +521,7 @@ class VehicleDetectorApp:
         """
         Inicia la aplicacion.
         """
+        print("\n[APP-RUN] Iniciando loop principal de la aplicacion\n")
         self.root.mainloop()
 
 

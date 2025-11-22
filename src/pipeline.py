@@ -82,6 +82,30 @@ class VehicleDetectionPipeline:
         print(f"[PIPELINE-INIT] - Eventos: {'ACTIVADOS' if self.enable_events else 'DESACTIVADOS'}")
         print("="*80 + "\n")
     
+    def reset(self):
+        """
+        Resetea el estado del pipeline para procesar un nuevo video.
+        Limpia tracker, cache de vehiculos conocidos y eventos.
+        """
+        print("\n[PIPELINE-RESET] Reseteando pipeline para nuevo video...")
+        
+        # Reset tracker
+        self.tracker = VehicleTracker(
+            max_age=getattr(config, "TRACKING_MAX_AGE", 30),
+            min_hits=getattr(config, "TRACKING_MIN_HITS", 3),
+            iou_threshold=getattr(config, "TRACKING_IOU_THRESHOLD", 0.3),
+        )
+        
+        # Reset estado
+        self.frame_count = 0
+        self.known_vehicles = {}
+        
+        # Reset detector de eventos si existe
+        if self.enable_events and self.event_detector:
+            self.event_detector.reset_history()
+        
+        print("[PIPELINE-RESET] Pipeline reseteado - IDs comenzaran desde 1\n")
+    
     def process_image(self, image):
         """
         Procesa una imagen completa detectando vehiculos y extrayendo informacion.
