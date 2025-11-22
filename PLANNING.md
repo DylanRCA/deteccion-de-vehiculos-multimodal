@@ -53,6 +53,9 @@ Transformar detector de vehiculos en sistema de gestion de estacionamiento con t
 - `update_vehicle_status()` - Actualizar estado
 - `get_vehicles_inside()` - Consultar dentro
 - `get_events_by_date()` - Historial por fecha
+- `find_vehicle_by_plate()` - Buscar por placa y estado
+- `find_vehicles_by_features()` - Buscar por marca/color
+- `match_exit_vehicle()` - Re-identificacion completa
 
 ---
 
@@ -73,20 +76,63 @@ Transformar detector de vehiculos en sistema de gestion de estacionamiento con t
 
 ---
 
-### 3. Modificaciones Pipeline
+### 3. Re-identificacion por Placa
+
+**Problema**:
+- Vehiculo entra → Track ID=5, se guarda en BD
+- Vehiculo dentro del estacionamiento → fuera de vista de camara
+- Tracker pierde ID=5 (elimina despues de 30 frames)
+- Vehiculo sale → Tracker crea NUEVO ID=47
+- Sistema necesita saber que ID=47 es el mismo vehiculo que ID=5
+
+**Solucion - Matching por Placa**:
+
+**En Entrada**:
+- Track ID=5 cruza linea hacia inside
+- Clasificar: Placa="ABC123", Marca="Toyota", Color="Blanco"
+- BD: INSERT vehicle (track_id=5, plate="ABC123", status="inside")
+- Evento: "entry"
+
+**En Salida**:
+- NUEVO Track ID=47 cruza linea hacia outside
+- Clasificar: Placa="ABC123"
+- BD: SELECT * WHERE plate="ABC123" AND status="inside"
+- Encuentra el registro original (vehicle_id del track_id=5)
+- BD: UPDATE ese vehicle_id SET status="outside"
+- Evento: "exit" vinculado al vehicle_id correcto
+
+**Prioridades de Matching**:
+1. **Placa exacta** (confianza 95%) - metodo principal
+2. **Marca + Color** (confianza 70%) - fallback si no hay placa
+3. **FIFO temporal** (confianza 50%) - ultimo recurso
+
+**Casos Edge**:
+- Sin placa detectada en salida → usar marca+color
+- Multiples matches ambiguos → marcar evento "match_confidence=low"
+- Salida sin entrada previa → evento "exit_without_entry"
+
+**Metodos BD adicionales**:
+- `find_vehicle_by_plate(plate, status)` - buscar por placa
+- `find_vehicles_by_features(brand, color, status)` - buscar por caracteristicas
+- `match_exit_vehicle(detection)` - logica completa de matching
+
+---
+
+### 4. Modificaciones Pipeline
 
 **Integracion**:
 - Inicializar `DatabaseManager`
 - Inicializar `EventDetector`
 - Registrar vehiculos nuevos en BD
 - Detectar eventos cada frame
+- **Aplicar re-identificacion en eventos de salida**
 - Guardar eventos en BD
 - Actualizar estados
 - Snapshots en eventos (opcional)
 
 ---
 
-### 4. Mejoras UI
+### 5. Mejoras UI
 
 **Panel Estadisticas**:
 - Vehiculos dentro
@@ -107,7 +153,7 @@ Transformar detector de vehiculos en sistema de gestion de estacionamiento con t
 
 ---
 
-### 5. Estructura Actualizada
+### 6. Estructura Actualizada
 
 ```
 detector_vehiculos/
@@ -132,29 +178,33 @@ detector_vehiculos/
 **Tareas**:
 1. Crear esquema SQL
 2. Implementar `DatabaseManager`
-3. Tests unitarios BD
-4. Integrar en pipeline
-5. Probar con datos
+3. Implementar metodos re-identificacion
+4. Tests unitarios BD y matching
+5. Integrar en pipeline
+6. Probar con datos
 
 **Criterios**:
 - BD se crea automaticamente
 - Vehiculos se registran
 - Consultas funcionan
+- Re-identificacion por placa >90%
 - Sin errores concurrencia
 
 ---
 
-### Sprint 2: Detector Eventos (2-3 dias)
+### Sprint 2: Detector Eventos + Re-identificacion (3-4 dias)
 **Tareas**:
 1. Implementar `EventDetector`
 2. Logica linea virtual
-3. Integrar en pipeline
-4. Tests eventos
-5. Probar con videos
+3. Integrar re-identificacion en eventos salida
+4. Integrar en pipeline
+5. Tests eventos y matching
+6. Probar con videos
 
 **Criterios**:
 - Eventos detectados correctamente
 - Direccion determinada bien
+- Re-identificacion funciona entrada/salida
 - Falsos positivos < 5%
 - Estados actualizados
 
@@ -190,7 +240,7 @@ detector_vehiculos/
 - Tests 100% pass
 - Docs actualizadas
 
-**Total Fase 2B: 9-12 dias**
+**Total Fase 2B: 10-13 dias**
 
 ---
 
@@ -204,6 +254,8 @@ detector_vehiculos/
 
 ### Robustez
 - Oclusiones manejadas ✅
+- Re-identificacion por placa >90%
+- Fallback marca+color si sin placa
 - Validar placas pre-eventos
 - Confianza minima 0.5
 - Reintentos BD
@@ -231,6 +283,8 @@ SNAPSHOT_DIR = 'snapshots/'
 
 ✅ Base de datos funcional
 ✅ Eventos detectados >90% precision
+✅ Re-identificacion entrada/salida por placa funcional
+✅ Correlacion correcta mismo vehiculo
 ✅ UI con estadisticas tiempo real
 ✅ Sistema estable >1 hora
 ✅ Performance < 100ms/frame
@@ -247,5 +301,5 @@ SNAPSHOT_DIR = 'snapshots/'
 
 ---
 
-**Estimado Fase 2B**: 9-12 dias
-**Estimado Total Fase 2**: 19-26 dias
+**Estimado Fase 2B**: 10-13 dias
+**Estimado Total Fase 2**: 20-27 dias
