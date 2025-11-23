@@ -221,11 +221,11 @@ class EventDetector:
         
         # Dibujar texto indicando direccion
         if self.entry_direction == 'down':
-            text_entry = "ENTRADA ↓"
-            text_exit = "SALIDA ↑"
+            text_entry = "ENTRADA (ABAJO)"
+            text_exit = "SALIDA (ARRIBA)"
         else:
-            text_entry = "ENTRADA ↑"
-            text_exit = "SALIDA ↓"
+            text_entry = "ENTRADA (ARRIBA)"
+            text_exit = "SALIDA (ABAJO)"
         
         # Posicionar texto
         y_entry = self.line_position + 30

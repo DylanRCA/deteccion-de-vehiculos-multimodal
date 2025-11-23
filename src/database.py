@@ -474,3 +474,73 @@ class DatabaseManager:
         except Exception as e:
             print(f"[DB-ERROR] Error consultando visitantes frecuentes: {str(e)}")
             return []
+    
+    def get_today_stats(self):
+        """
+        Obtiene estadisticas del dia actual.
+        
+        Returns:
+            dict: {
+                'inside': int,              # Vehiculos dentro ahora
+                'entries_today': int,       # Entradas del dia
+                'exits_today': int,         # Salidas del dia
+                'avg_duration': int,        # Duracion promedio (minutos)
+                'last_entry': dict or None  # Ultima entrada
+            }
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Vehiculos dentro ahora
+                cursor.execute('SELECT COUNT(*) FROM active_vehicles')
+                inside = cursor.fetchone()[0]
+                
+                # Entradas del dia (desde parking_history)
+                cursor.execute('''
+                    SELECT COUNT(*) FROM parking_history
+                    WHERE DATE(entry_time) = DATE('now')
+                ''')
+                entries_today = cursor.fetchone()[0]
+                
+                # Salidas del dia
+                cursor.execute('''
+                    SELECT COUNT(*) FROM parking_history
+                    WHERE DATE(exit_time) = DATE('now')
+                ''')
+                exits_today = cursor.fetchone()[0]
+                
+                # Duracion promedio del dia
+                cursor.execute('''
+                    SELECT AVG(duration_minutes) FROM parking_history
+                    WHERE DATE(entry_time) = DATE('now')
+                ''')
+                avg_duration = cursor.fetchone()[0]
+                avg_duration = int(avg_duration) if avg_duration else 0
+                
+                # Ultima entrada (de active_vehicles)
+                cursor.execute('''
+                    SELECT * FROM active_vehicles
+                    ORDER BY entry_time DESC
+                    LIMIT 1
+                ''')
+                last_entry_row = cursor.fetchone()
+                last_entry = dict(last_entry_row) if last_entry_row else None
+                
+                return {
+                    'inside': inside,
+                    'entries_today': entries_today,
+                    'exits_today': exits_today,
+                    'avg_duration': avg_duration,
+                    'last_entry': last_entry
+                }
+                
+        except Exception as e:
+            print(f"[DB-ERROR] Error consultando estadisticas del dia: {str(e)}")
+            return {
+                'inside': 0,
+                'entries_today': 0,
+                'exits_today': 0,
+                'avg_duration': 0,
+                'last_entry': None
+            }

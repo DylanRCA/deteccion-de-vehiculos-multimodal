@@ -1,7 +1,7 @@
 # Detector de Vehiculos Multimodal - Documentacion del Proyecto
 
 ## Descripcion General
-Sistema completo de deteccion y gestion de vehiculos con tracking multi-vehiculo, base de datos, deteccion de eventos entrada/salida y reconocimiento de placas para Peru.
+Sistema completo de deteccion y gestion de vehiculos con tracking multi-vehiculo, base de datos, deteccion de eventos entrada/salida, reconocimiento de placas para Peru y panel de estadisticas en tiempo real.
 
 ## Estado Actual del Proyecto
 
@@ -20,11 +20,13 @@ Sistema completo de deteccion y gestion de vehiculos con tracking multi-vehiculo
 - ✅ Optimizacion de performance (10x mas rapido)
 
 ### Fase 2B - Persistencia y Eventos ✅ COMPLETADA
-- ✅ Base de datos SQLite con 3 tablas
+- ✅ Base de datos SQLite con 3 tablas (NUEVO ESQUEMA)
 - ✅ Detector de eventos entrada/salida
 - ✅ Sistema de linea virtual configurable
 - ✅ Logging comprensivo en todos los modulos
 - ✅ Manejo robusto de errores
+- ✅ Re-identificacion por placa
+- ✅ IDs temporales para vehiculos sin placa
 
 ### Fase 2C - Optimizaciones ✅ COMPLETADA
 - ✅ Reduccion de logging BD (90% menos writes)
@@ -33,12 +35,14 @@ Sistema completo de deteccion y gestion de vehiculos con tracking multi-vehiculo
 - ✅ Validaciones de bbox robustas
 - ✅ Sistema de reset entre videos
 
-### Fase 3 - Futuro ⏳
-- ⏳ Multi-camara
-- ⏳ Dashboard web
-- ⏳ Panel de estadisticas en UI
-- ⏳ Visor de historial
-- ⏳ Reportes exportables
+### Fase 3 - UI y Estadisticas ✅ PARCIALMENTE COMPLETADA
+- ✅ Panel de estadisticas en tiempo real (lado derecho UI)
+- ✅ Consultas optimizadas de BD
+- ✅ Actualizacion automatica cada 30 frames
+- ⏳ Visor de historial (pendiente)
+- ⏳ Graficos de ocupacion (pendiente)
+- ⏳ Configuracion interactiva (pendiente)
+- ⏳ Reportes exportables (pendiente)
 
 ## Tecnologias Utilizadas
 
@@ -79,20 +83,26 @@ Sistema completo de deteccion y gestion de vehiculos con tracking multi-vehiculo
    ├─ VehicleClassifier (Logo YOLO + Color HSV)
    └─ Cache en known_vehicles
    ↓
-6. BASE DE DATOS (cada 10 frames)
-   ├─ Registrar vehiculo nuevo
-   └─ Log deteccion
-   ↓
-7. EVENTOS (cada frame)
+6. EVENTOS (cada frame)
    ├─ EventDetector.detect_events()
-   ├─ Log evento en BD
-   └─ Actualizar estado vehiculo
+   ├─ Detectar cruces de linea virtual
+   └─ Clasificar entry/exit
+   ↓
+7. BASE DE DATOS (eventos entry/exit)
+   ├─ ENTRY → INSERT active_vehicles + UPDATE vehicle_registry
+   ├─ EXIT → INSERT parking_history + DELETE active_vehicles
+   └─ Re-identificacion por placa
    ↓
 8. VISUALIZACION
    ├─ Dibujar bounding boxes
    ├─ Mostrar IDs de tracking
    ├─ Dibujar linea virtual
    └─ Renderizar en UI
+   ↓
+9. ESTADISTICAS (cada 30 frames)
+   ├─ Consultar BD (get_today_stats)
+   ├─ Actualizar panel UI
+   └─ Mostrar dentro/entradas/salidas/duracion
 ```
 
 ### Estructura de Directorios
@@ -105,7 +115,7 @@ detector_vehiculos/
 │   ├── plate_detector.pt       # Deteccion placas
 │   └── brand_detector.pt       # Deteccion logos (14 marcas)
 ├── database/                # Base de datos SQLite
-│   └── estacionamiento.db      # BD principal
+│   └── estacionamiento.db      # BD principal (NUEVO ESQUEMA)
 ├── snapshots/               # Capturas de vehiculos (futuro)
 ├── src/                     # Codigo fuente
 │   ├── __init__.py
@@ -113,16 +123,19 @@ detector_vehiculos/
 │   ├── plate_recognizer.py     # Detector placas + OCR
 │   ├── classifier.py           # Clasificador marca/color
 │   ├── tracker.py              # Sistema ByteTrack
-│   ├── database.py             # Gestor SQLite
+│   ├── database.py             # Gestor SQLite (NUEVO ESQUEMA)
 │   ├── event_detector.py       # Detector entrada/salida
 │   ├── pipeline.py             # Orquestador principal
-│   ├── DOCUMENTATION.md        # Doc del directorio src/
-│   └── TRACKER_DOCS.md         # Doc especifica del tracker
-├── main.py                  # Aplicacion GUI
+│   └── DOCUMENTATION.md        # Doc del directorio src/
+├── main.py                  # Aplicacion GUI (CON PANEL STATS)
 ├── config.py                # Configuracion centralizada
+├── diagnostico_bd.py        # Script de diagnostico
 ├── requirements.txt         # Dependencias
 ├── DOCUMENTATION.md         # Este archivo
 ├── PLANNING.md              # Plan de desarrollo
+├── MIGRACION.md             # Guia de migracion esquema BD
+├── TROUBLESHOOTING.md       # Guia de problemas comunes
+├── PANEL_ESTADISTICAS.md    # Doc del panel de stats
 └── README.md                # Readme del proyecto
 ```
 
@@ -218,38 +231,61 @@ update(detections) -> List[dict]
 - `TRACKING_MIN_HITS = 5` - Detecciones para confirmar track
 - `TRACKING_IOU_THRESHOLD = 0.25` - Umbral de matching
 
-**Caracteristicas**:
-- IDs empiezan en 1
-- Reset automatico entre videos
-- Maneja oclusiones hasta 1.5 segundos
-- Sin modelos preentrenados (solo matematicas)
-
-### 5. DatabaseManager (database.py)
-**Proposito**: Persistir vehiculos, eventos y detecciones
+### 5. DatabaseManager (database.py) - NUEVO ESQUEMA
+**Proposito**: Persistir vehiculos, sesiones y estadisticas
 
 **Tecnologia**: SQLite3 con WAL mode
 
-**Esquema**:
-- `vehicles` - Vehiculos registrados
-- `events` - Eventos entrada/salida
-- `detections` - Historial de detecciones
+**Esquema** (3 tablas):
+```sql
+-- 1. OPERACIONAL: Vehiculos dentro AHORA
+active_vehicles (
+    id, plate, track_id, brand, color,
+    entry_time, parking_duration_minutes
+)
 
-**API**:
+-- 2. HISTORICO: Sesiones completadas
+parking_history (
+    id, plate, brand, color,
+    entry_time, exit_time, duration_minutes,
+    source  -- 'live_camera' o 'video_analysis'
+)
+
+-- 3. REGISTRO: Catalogo de vehiculos conocidos
+vehicle_registry (
+    plate PRIMARY KEY, brand, color,
+    first_seen, last_seen,
+    total_visits, avg_duration_minutes
+)
+```
+
+**API Principal**:
 ```python
-register_vehicle(track_id, plate, brand, color) -> int
-log_event(vehicle_id, event_type, timestamp, camera_id)
-log_detection(vehicle_id, bbox, frame_num)
-update_vehicle_status(vehicle_id, status)
-get_vehicle_by_track_id(track_id) -> dict
-get_vehicles_inside() -> List[dict]
-get_events_by_date(date) -> List[dict]
+# OPERACIONAL
+register_entry(plate, track_id, brand, color) -> int
+register_exit(plate) -> dict  # Retorna sesion completada
+get_active_vehicles() -> list
+find_active_by_plate(plate) -> dict or None
+update_active_track_id(plate, new_track_id)
+
+# HISTORICO
+get_history_by_date(date) -> list
+get_history_by_plate(plate) -> list
+
+# REGISTRO
+get_vehicle_stats(plate) -> dict
+get_frequent_visitors(limit=10) -> list
+
+# ESTADISTICAS
+get_today_stats() -> dict  # NUEVO - Para panel UI
 ```
 
 **Caracteristicas**:
-- Logging comprensivo
-- Manejo de errores robusto
+- Re-identificacion por placa (evita duplicados)
+- IDs temporales para vehiculos sin placa
+- Calculo automatico de duracion
+- Estadisticas acumulativas
 - WAL mode para concurrencia
-- Indices optimizados
 
 ### 6. EventDetector (event_detector.py)
 **Proposito**: Detectar eventos de entrada/salida
@@ -283,13 +319,6 @@ reset_history()  # Limpiar historial
 - `EVENT_MIN_CONFIDENCE = 0.6` - Confianza minima
 - `EVENT_LINE_TOLERANCE = 15` - Tolerancia en pixeles
 
-**Estados de vehiculo**:
-- `approaching_line` - Acercandose
-- `crossed_entry` - Cruzo hacia entrada
-- `crossed_exit` - Cruzo hacia salida
-- `inside` - Dentro del estacionamiento
-- `outside` - Fuera del estacionamiento
-
 ### 7. VehicleDetectionPipeline (pipeline.py)
 **Proposito**: Orquestar todos los componentes
 
@@ -299,6 +328,7 @@ reset_history()  # Limpiar historial
 - Logging condicional basado en config
 - Reset automatico entre videos
 - Manejo de errores robusto
+- Generacion de IDs temporales
 
 **API**:
 ```python
@@ -312,18 +342,42 @@ process_video_frame(frame) -> dict
 1. Detectar vehiculos
 2. Actualizar tracker
 3. Clasificar vehiculos nuevos (cache)
-4. Log detecciones BD (cada 10 frames)
-5. Detectar eventos
-6. Procesar eventos (BD)
-7. Dibujar resultados
-8. Retornar imagen anotada
+   - Si sin placa → Generar ID temporal
+4. Detectar eventos (cruces de linea)
+5. Procesar eventos entry/exit:
+   - ENTRY: Buscar en active_vehicles → Registrar si nuevo
+   - EXIT: Mover de active_vehicles a parking_history
+6. Dibujar resultados
+7. Retornar imagen anotada
 
-**Optimizaciones**:
-- Clasifica solo vehiculos nuevos
-- Logging BD cada 10 frames (no cada frame)
-- Logging debug condicional (config)
-- Validacion bbox robusta
-- Try-except en puntos criticos
+### 8. VehicleDetectorApp (main.py) - CON PANEL DE ESTADISTICAS
+**Proposito**: Interfaz grafica de usuario
+
+**Layout** (3 columnas):
+```
+┌──────────┬────────────┬─────────────┐
+│ Controles│   Video    │ Estadisticas│
+│  250px   │ Expandible │    200px    │
+└──────────┴────────────┴─────────────┘
+```
+
+**Panel de Estadisticas** (Columna Derecha):
+- **DENTRO: X** - Vehiculos actualmente en estacionamiento
+- **ENTRADAS: X** - Total entradas del dia
+- **SALIDAS: X** - Total salidas del dia
+- **ULTIMA ENTRADA** - Placa + tiempo relativo ("hace 2 min")
+- **DURACION PROM: X min** - Promedio de estadia del dia
+- **Boton "Actualizar"** - Refrescar stats manualmente
+
+**Actualizacion de Stats**:
+- Automatica: Cada 30 frames en camara
+- Manual: Boton "Actualizar"
+- Post-video: Al finalizar procesamiento
+
+**Metodos Nuevos**:
+```python
+_update_stats() -> None  # Consulta BD y actualiza UI
+```
 
 ## Configuracion (config.py)
 
@@ -343,7 +397,11 @@ CAR_MIN_CONFIDENCE = 0.5       # Confianza minima vehiculo
 ```python
 DB_PATH = 'database/estacionamiento.db'
 SNAPSHOT_DIR = 'snapshots/'
-DB_DETECTION_LOG_INTERVAL = 10  # Log cada N frames
+DB_SOURCE_LIVE = 'live_camera'
+DB_SOURCE_VIDEO = 'video_analysis'
+TEMP_PLATE_PREFIX = 'TEMP_'
+PARKING_WARN_NO_EXIT_ENTRY = True
+PARKING_WARN_DUPLICATE_ENTRY = True
 ```
 
 ### Eventos
@@ -354,10 +412,15 @@ EVENT_MIN_CONFIDENCE = 0.6
 EVENT_LINE_TOLERANCE = 15
 ```
 
+### UI
+```python
+UI_STATS_UPDATE_INTERVAL = 30  # Frames entre actualizaciones de stats
+```
+
 ### Debug
 ```python
-DEBUG_VERBOSE = False          # Logging detallado
-DEBUG_LOG_INTERVAL = 30        # Log cada N frames
+DEBUG_VERBOSE = False
+DEBUG_LOG_INTERVAL = 30
 DEBUG_SHOW_TRACK_IDS = True
 DEBUG_SHOW_EVENT_LINE = True
 ```
@@ -366,22 +429,11 @@ DEBUG_SHOW_EVENT_LINE = True
 
 ### Metricas (Video 400 frames, 8 vehiculos)
 
-**Antes (Fase 1)**:
-- Tiempo: ~500ms/frame (2 FPS)
-- Total: ~200 segundos
-- Track IDs: N/A (sin tracking)
-
-**Despues (Fase 2A - Tracking)**:
-- Tiempo: ~50ms/frame (20 FPS)
-- Total: ~20 segundos
-- Mejora: 10x mas rapido
-- Track IDs: 1-12 (estables)
-
-**Despues (Fase 2B - BD + Eventos)**:
+**Con Tracking + BD + Eventos + Stats**:
 - Tiempo: ~30-50ms/frame (20-30 FPS)
 - Total: ~15-20 segundos
-- BD writes: ~240 (vs 2,400 sin optimizacion)
 - Track IDs: 1-12 (optimizados)
+- BD writes: Minimos (solo en eventos)
 - Consola: Limpia
 
 ### Breakdown de Tiempo (Por Frame)
@@ -394,8 +446,9 @@ DEBUG_SHOW_EVENT_LINE = True
 | - Placa OCR | ~250ms | Parte lenta |
 | - Marca YOLO | ~30ms | |
 | - Color HSV | ~20ms | |
-| BD writes | <1ms | Cada 10 frames |
 | Eventos | ~2ms | Por frame |
+| BD writes | <1ms | Solo en eventos |
+| Stats query | ~5ms | Cada 30 frames |
 | Dibujo | ~3ms | Por frame |
 | **Total (nuevo vehiculo)** | ~320ms | Ocurre 1 vez |
 | **Total (tracking)** | ~20ms | Resto del video |
@@ -410,23 +463,11 @@ DEBUG_SHOW_EVENT_LINE = True
     'confidence': 0.85,
     'class': 'car',
     'Placa': 'SI',                    # 'SI' o 'NO'
-    'Numero-Placa': 'ABC1234',        # Texto o '------'
+    'Numero-Placa': 'ABC1234',        # Texto o ID temporal
     'plate_bbox': [10, 50, 80, 70],   # Relativo a vehiculo
     'brand': 'Toyota',
     'brand_bbox': [20, 20, 60, 50],   # Relativo a vehiculo
     'color': 'BLANCO'
-}
-```
-
-### Track (Tracker)
-```python
-{
-    'id': 1,
-    'bbox': [100.0, 200.0, 300.0, 400.0],  # Floats
-    'hits': 15,                             # Total detecciones
-    'hit_streak': 15,                       # Detecciones consecutivas
-    'age': 15,                              # Frames desde creacion
-    'time_since_update': 0                  # Frames sin deteccion
 }
 ```
 
@@ -435,160 +476,138 @@ DEBUG_SHOW_EVENT_LINE = True
 {
     'track_id': 1,
     'event': 'entry',                  # 'entry' o 'exit'
-    'timestamp': datetime(2024, 1, 15, 10, 30, 0)
+    'timestamp': datetime(2024, 11, 23, 10, 30, 0)
 }
 ```
 
-### Registro BD (vehicles)
+### Registro BD (active_vehicles)
 ```sql
 {
-    id: 1,                             -- Auto-increment
-    track_id: 1,                       -- Del tracker
-    plate_number: 'ABC1234',           -- Puede ser NULL
+    id: 1,
+    plate: 'ABC1234',                  -- O 'TEMP_20241123_103000_5'
+    track_id: 1,
     brand: 'Toyota',
     color: 'BLANCO',
-    first_seen: '2024-01-15 10:30:00',
-    last_seen: '2024-01-15 10:35:00',
-    status: 'inside'                   -- 'inside', 'outside', 'unknown'
+    entry_time: '2024-11-23 10:30:00',
+    parking_duration_minutes: 0
+}
+```
+
+### Estadisticas (get_today_stats)
+```python
+{
+    'inside': 3,                       # Vehiculos dentro ahora
+    'entries_today': 12,               # Entradas del dia
+    'exits_today': 9,                  # Salidas del dia
+    'avg_duration': 15,                # Duracion promedio (min)
+    'last_entry': {                    # Ultima entrada o None
+        'plate': 'TEMP_...',
+        'entry_time': '2024-11-23 10:35:00',
+        ...
+    }
 }
 ```
 
 ## Casos de Uso
 
-### 1. Procesar Video de Estacionamiento
-```python
-# UI
-1. Abrir main.py
-2. Click "Subir Video"
-3. Seleccionar archivo
-   → Pipeline resetea automaticamente
-   → IDs empiezan en 1
-4. Video procesa automaticamente
-   → Deteccion + Tracking + Clasificacion
-   → BD registra vehiculos y eventos
-   → Eventos detectan entrada/salida
-5. Video se reproduce con anotaciones
-   → Bounding boxes verdes
-   → IDs de tracking
-   → Linea virtual amarilla
-```
-
-### 2. Monitoreo en Tiempo Real (Camara)
+### 1. Monitoreo en Tiempo Real (Camara)
 ```python
 1. Click "Activar Camara"
    → Pipeline resetea
    → IDs empiezan en 1
 2. Sistema procesa en vivo
    → ~20-30 FPS
-   → BD acumula historial
-   → Eventos detectados
+   → BD acumula eventos entry/exit
+   → Panel stats se actualiza cada 30 frames
 3. Click "Detener Camara"
    → BD mantiene historial
+```
+
+### 2. Analisis de Video Historico
+```python
+1. Click "Subir Video"
+   → Pipeline resetea
+2. Video procesa automaticamente
+   → Deteccion + Tracking + Clasificacion
+   → Eventos detectados (NO persisten en BD)
+   → Linea virtual visible
+3. Video se reproduce con anotaciones
 ```
 
 ### 3. Procesar Imagen Unica
 ```python
 1. Click "Subir Imagen"
-2. Seleccionar archivo
-3. Click "Procesar"
+2. Click "Procesar"
    → Deteccion + Clasificacion (sin tracking)
-4. Ver resultados en panel derecho
+3. Ver resultados en panel derecho
 ```
 
-## Problemas Resueltos y Soluciones
+### 4. Consultar Estadisticas
+```python
+1. Mientras camara activa:
+   → Stats se actualizan automaticamente
+2. O click "Actualizar" manualmente
+3. Ver:
+   - Vehiculos dentro
+   - Entradas/salidas del dia
+   - Ultima entrada con tiempo relativo
+   - Duracion promedio
+```
+
+## Problemas Resueltos
 
 ### Problema 1: Bbox Float vs Int ✅
-**Sintoma**: Error OpenCV "Can't parse pt1"
-
-**Causa**: Tracker retorna floats, OpenCV necesita ints
-
-**Solucion**: 
-- Conversion explicita a int antes de slicing
-- Validacion de bbox en _draw_results()
-- Try-except robusto
-
-**Archivo**: pipeline.py
+**Solucion**: Conversion explicita a int en pipeline.py
 
 ### Problema 2: Demasiados Track IDs ✅
-**Sintoma**: 55 IDs para 8 vehiculos (ratio 6.9:1)
-
-**Causa**: Parametros muy permisivos
-
-**Solucion**:
-- TRACKING_MIN_HITS = 5 (mas estricto)
-- TRACKING_IOU_THRESHOLD = 0.25 (mas selectivo)
-- CAR_MIN_CONFIDENCE = 0.5 (reduce false positives)
-
-**Resultado**: ~10-12 IDs (ratio 1.25:1)
+**Solucion**: Parametros optimizados (MIN_HITS=5, IOU=0.25)
 
 ### Problema 3: IDs Acumulan Entre Videos ✅
-**Sintoma**: Video 1 → IDs 1-12, Video 2 → IDs 13-24
+**Solucion**: Metodo pipeline.reset() automatico
 
-**Causa**: Tracker no resetea entre videos
+### Problema 4: Logging Excesivo ✅
+**Solucion**: Logging condicional (DEBUG_VERBOSE, LOG_INTERVAL)
 
-**Solucion**:
-- Metodo pipeline.reset()
-- Llamado automatico en load_video()
-- Llamado automatico en toggle_camera()
+### Problema 5: Duplicados en BD ✅
+**Solucion**: Re-identificacion por placa
 
-**Resultado**: Cada video empieza en ID=1
+### Problema 6: Vehiculos Sin Placa ✅
+**Solucion**: IDs temporales (TEMP_YYYYMMDD_HHMMSS_trackid)
 
-### Problema 4: Video No Se Procesa ✅
-**Sintoma**: Barra 100% pero video no reproduce
+### Problema 7: Flechas Unicode "???" ✅
+**Solucion**: Texto descriptivo en event_detector.py
 
-**Causa**: Excepciones no manejadas en BD/eventos
-
-**Solucion**:
-- Try-except en todos los puntos criticos
-- Retornos seguros (frame original si error)
-- Logging comprensivo
-
-**Resultado**: Video siempre procesa, errores logeados
-
-### Problema 5: Logging Excesivo ✅
-**Sintoma**: 2,400+ writes BD, consola saturada
-
-**Causa**: Log cada frame
-
-**Solucion**:
-- DB_DETECTION_LOG_INTERVAL = 10
-- DEBUG_VERBOSE = False
-- Logging condicional
-
-**Resultado**: 90% reduccion, consola limpia
+### Problema 8: Stats No Visibles ✅
+**Solucion**: Panel dedicado en UI con actualizacion automatica
 
 ## Limitaciones Conocidas
 
 ### Tecnicas
-1. **Placas**: Optimizado para formato peruano alfanumerico
-2. **Marcas**: Solo 14 marcas soportadas (expandible)
-3. **Colores**: 7 colores basicos, deteccion heuristica
+1. **Placas**: Optimizado para formato peruano
+2. **Marcas**: Solo 14 marcas soportadas
+3. **Colores**: 7 colores basicos (heuristica)
 4. **Tracking**: Puede perder vehiculos en oclusiones >1.5seg
 5. **Eventos**: Requiere linea virtual correctamente posicionada
+6. **Stats**: Solo dia actual (no historico multi-dia en UI)
 
 ### Performance
 1. **OCR**: ~250ms por vehiculo (primera vez)
 2. **BD**: SQLite single-threaded
 3. **UI**: Single-threaded, puede congelar en videos largos
+4. **Stats**: Query cada 30 frames agrega ~5ms
 
 ### Funcionales
-1. **Multi-camara**: No implementado aun
-2. **Re-identificacion**: Solo por posicion (IoU), no por apariencia
-3. **UI Stats**: Panel de estadisticas pendiente
-4. **Historial**: Visor de BD pendiente
-5. **Exportacion**: Reportes pendientes
+1. **Re-identificacion**: Solo por placa (no apariencia visual)
+2. **UI Stats**: Sin graficos (solo numeros)
+3. **Historial UI**: No hay visor de sesiones pasadas
+4. **Exportacion**: No hay reportes PDF/CSV
+5. **Configuracion UI**: No hay interfaz para ajustar linea virtual
 
 ## Troubleshooting
 
 ### Error: "slice indices must be integers"
 **Causa**: Bbox con floats
-
 **Solucion**: Ya resuelto en pipeline.py actual
-
-### Error: "database is locked"
-**Causa**: Multiples writes simultaneos
-
-**Solucion**: Ya manejado con try-except, no bloquea
 
 ### Demasiados Track IDs
 **Solucion**: Ajustar en config.py:
@@ -597,46 +616,52 @@ TRACKING_MIN_HITS = 7
 CAR_MIN_CONFIDENCE = 0.6
 ```
 
-### Pierde Vehiculos Reales
-**Solucion**: Ajustar en config.py:
-```python
-TRACKING_IOU_THRESHOLD = 0.3
-TRACKING_MIN_HITS = 3
-```
-
-### Video Muy Lento
+### Sin Registros en BD
 **Solucion**: 
-- Desactivar BD: `enable_database=False` en main.py
-- Desactivar eventos: `enable_events=False`
+1. Verificar `enable_database=True` en main.py
+2. Verificar eventos detectados (cruzan linea virtual)
+3. Ejecutar `python diagnostico_bd.py`
 
-### IDs No Resetean
-**Solucion**: Verificar que main.py llame `pipeline.reset()`
+### Panel Stats Vacio
+**Solucion**:
+1. Activar camara y generar eventos
+2. Click "Actualizar" manualmente
+3. Verificar BD con `sqlite3 database/estacionamiento.db`
 
-## Testing
+### "???" en Linea Virtual
+**Solucion**: Reemplazar `src/event_detector.py` con version corregida
 
-### Unit Tests (Pendiente)
+## Scripts de Utilidad
+
+### diagnostico_bd.py
+Verifica estado de BD y configuracion:
 ```bash
-# Futuros tests
-python -m pytest tests/test_tracker.py
-python -m pytest tests/test_database.py
-python -m pytest tests/test_events.py
+python diagnostico_bd.py
 ```
 
-### Manual Testing
-```bash
-python main.py
-# 1. Probar imagen
-# 2. Probar video
-# 3. Probar camara
-# 4. Verificar BD
-```
+Muestra:
+- Tablas existentes
+- Cantidad de registros
+- Parametros de configuracion
+- Recomendaciones para ajustes
 
-### Verificar BD
+### Consultas BD Manuales
 ```bash
 sqlite3 database/estacionamiento.db
-sqlite> SELECT COUNT(*) FROM vehicles;
-sqlite> SELECT * FROM events ORDER BY timestamp DESC LIMIT 10;
-sqlite> .exit
+```
+
+```sql
+-- Vehiculos dentro ahora
+SELECT * FROM active_vehicles;
+
+-- Sesiones del dia
+SELECT * FROM parking_history 
+WHERE DATE(entry_time) = DATE('now');
+
+-- Stats rapidas
+SELECT COUNT(*) FROM active_vehicles;
+SELECT COUNT(*) FROM parking_history 
+WHERE DATE(entry_time) = DATE('now');
 ```
 
 ## Dependencias
@@ -664,6 +689,12 @@ Ver `requirements.txt`
 
 ## Changelog
 
+### v3.0 (Fase 3 - Panel Stats) - ACTUAL
+- ✅ Panel de estadisticas en UI
+- ✅ Actualizacion automatica cada 30 frames
+- ✅ Metodo get_today_stats() en BD
+- ✅ Vista de tiempo relativo ("hace X min")
+
 ### v2.1 (Fase 2C) - Optimizaciones
 - ✅ Reduccion logging BD (90%)
 - ✅ Configuracion centralizada
@@ -671,10 +702,11 @@ Ver `requirements.txt`
 - ✅ Sistema de reset
 
 ### v2.0 (Fase 2B) - BD y Eventos
-- ✅ Base de datos SQLite
+- ✅ Nuevo esquema BD (3 tablas)
+- ✅ Re-identificacion por placa
+- ✅ IDs temporales
 - ✅ Detector de eventos
 - ✅ Logging comprensivo
-- ✅ Manejo de errores
 
 ### v1.5 (Fase 2A) - Tracking
 - ✅ ByteTrack implementado

@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import traceback
+from datetime import datetime
 
 # Agregar src al path para importar modulos
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -25,7 +26,7 @@ class VehicleDetectorApp:
         
         self.root = ctk.CTk()
         self.root.title("Detector de Vehiculos - Peru")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x800")  # Aumentado de 1200 a 1400 para panel stats
         
         # Configurar tema
         ctk.set_appearance_mode("dark")
@@ -36,6 +37,10 @@ class VehicleDetectorApp:
         self.current_image = None
         self.camera_active = False
         self.video_capture = None
+        
+        # Contador de frames para actualizar stats
+        self.frame_counter = 0
+        self.stats_update_interval = 30
         
         # Crear interfaz
         self._create_widgets()
@@ -52,13 +57,9 @@ class VehicleDetectorApp:
         try:
             print("\n[APP-INIT] Iniciando carga del pipeline...")
             
-            # IMPORTANTE: Puedes desactivar BD y eventos aqui si hay problemas
-            # enable_database=False desactiva completamente la base de datos
-            # enable_events=False desactiva completamente los eventos
-            
             self.pipeline = VehicleDetectionPipeline(
-                enable_database=True,   # Cambiar a False para desactivar BD
-                enable_events=True      # Cambiar a False para desactivar eventos
+                enable_database=True,
+                enable_events=True
             )
             
             print("[APP-INIT] Pipeline cargado exitosamente\n")
@@ -75,11 +76,11 @@ class VehicleDetectorApp:
         """
         Crea los widgets de la interfaz grafica.
         """
-        # Frame principal
+        # Frame principal con 3 columnas
         main_frame = ctk.CTkFrame(self.root)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # Frame izquierdo: controles
+        # === COLUMNA IZQUIERDA: Controles ===
         control_frame = ctk.CTkFrame(main_frame, width=250)
         control_frame.pack(side="left", fill="y", padx=(0, 10))
         control_frame.pack_propagate(False)
@@ -141,7 +142,7 @@ class VehicleDetectorApp:
         self.info_text = ctk.CTkTextbox(
             control_frame,
             width=230,
-            height=300
+            height=250
         )
         self.info_text.pack(pady=10, padx=20)
 
@@ -160,9 +161,9 @@ class VehicleDetectorApp:
         )
         self.status_label.pack(side="bottom", pady=10)
         
-        # Frame derecho: visualizacion
+        # === COLUMNA CENTRO: Visualizacion ===
         display_frame = ctk.CTkFrame(main_frame)
-        display_frame.pack(side="right", fill="both", expand=True)
+        display_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
         
         # Canvas para mostrar imagen/video
         self.canvas = ctk.CTkLabel(
@@ -171,6 +172,105 @@ class VehicleDetectorApp:
             font=("Arial", 16)
         )
         self.canvas.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # === COLUMNA DERECHA: Estadisticas ===
+        stats_frame = ctk.CTkFrame(main_frame, width=200)
+        stats_frame.pack(side="right", fill="y")
+        stats_frame.pack_propagate(False)
+        
+        # Titulo
+        stats_title = ctk.CTkLabel(
+            stats_frame,
+            text="ESTADISTICAS",
+            font=("Arial", 18, "bold")
+        )
+        stats_title.pack(pady=20)
+        
+        # Separador
+        ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=10)
+        
+        # Stats labels
+        self.stats_labels = {}
+        
+        # DENTRO
+        self.stats_labels['inside'] = ctk.CTkLabel(
+            stats_frame,
+            text="DENTRO: 0",
+            font=("Arial", 16, "bold"),
+            text_color="#4CAF50"
+        )
+        self.stats_labels['inside'].pack(pady=10, padx=20, anchor="w")
+        
+        # ENTRADAS
+        self.stats_labels['entries'] = ctk.CTkLabel(
+            stats_frame,
+            text="ENTRADAS: 0",
+            font=("Arial", 14)
+        )
+        self.stats_labels['entries'].pack(pady=5, padx=20, anchor="w")
+        
+        # SALIDAS
+        self.stats_labels['exits'] = ctk.CTkLabel(
+            stats_frame,
+            text="SALIDAS: 0",
+            font=("Arial", 14)
+        )
+        self.stats_labels['exits'].pack(pady=5, padx=20, anchor="w")
+        
+        # Separador
+        ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=15)
+        
+        # ULTIMA ENTRADA
+        ctk.CTkLabel(
+            stats_frame,
+            text="ULTIMA ENTRADA:",
+            font=("Arial", 12, "bold")
+        ).pack(pady=(10, 5), padx=20, anchor="w")
+        
+        self.stats_labels['last_entry_plate'] = ctk.CTkLabel(
+            stats_frame,
+            text="---",
+            font=("Arial", 11)
+        )
+        self.stats_labels['last_entry_plate'].pack(pady=2, padx=20, anchor="w")
+        
+        self.stats_labels['last_entry_time'] = ctk.CTkLabel(
+            stats_frame,
+            text="",
+            font=("Arial", 10),
+            text_color="gray"
+        )
+        self.stats_labels['last_entry_time'].pack(pady=2, padx=20, anchor="w")
+        
+        # Separador
+        ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=15)
+        
+        # DURACION PROMEDIO
+        ctk.CTkLabel(
+            stats_frame,
+            text="DURACION PROM:",
+            font=("Arial", 12, "bold")
+        ).pack(pady=(10, 5), padx=20, anchor="w")
+        
+        self.stats_labels['avg_duration'] = ctk.CTkLabel(
+            stats_frame,
+            text="0 min",
+            font=("Arial", 14)
+        )
+        self.stats_labels['avg_duration'].pack(pady=2, padx=20, anchor="w")
+        
+        # Boton de refrescar stats manualmente
+        self.btn_refresh_stats = ctk.CTkButton(
+            stats_frame,
+            text="Actualizar",
+            command=self._update_stats,
+            height=30,
+            width=160
+        )
+        self.btn_refresh_stats.pack(pady=20, padx=20)
+        
+        # Inicializar stats vacías
+        self._update_stats()
     
     def _load_image(self):
         """
@@ -284,7 +384,6 @@ class VehicleDetectorApp:
                     
                 except Exception as e:
                     print(f"[APP-ERROR] Error procesando frame {frame_idx}: {str(e)}")
-                    # Continuar con frame original
                     annotated_frames.append(frame.copy())
 
                 # Actualizar progreso
@@ -365,6 +464,12 @@ class VehicleDetectorApp:
                         result = self.pipeline.process_video_frame(frame)
                         self._display_image(result['annotated_image'])
                         self._update_info_text(result['detections'])
+                        
+                        # Actualizar stats cada 30 frames
+                        self.frame_counter += 1
+                        if self.frame_counter >= self.stats_update_interval:
+                            self._update_stats()
+                            self.frame_counter = 0
                     else:
                         self._display_image(frame)
                 except Exception as e:
@@ -488,6 +593,63 @@ class VehicleDetectorApp:
             
         except Exception as e:
             print(f"[APP-WARNING] Error actualizando info text: {str(e)}")
+    
+    def _update_stats(self):
+        """
+        Actualiza el panel de estadisticas.
+        """
+        try:
+            if not self.pipeline or not self.pipeline.enable_database or not self.pipeline.db:
+                # Si BD no esta habilitada, mostrar valores por defecto
+                self.stats_labels['inside'].configure(text="DENTRO: 0")
+                self.stats_labels['entries'].configure(text="ENTRADAS: 0")
+                self.stats_labels['exits'].configure(text="SALIDAS: 0")
+                self.stats_labels['last_entry_plate'].configure(text="---")
+                self.stats_labels['last_entry_time'].configure(text="")
+                self.stats_labels['avg_duration'].configure(text="0 min")
+                return
+            
+            # Obtener estadisticas de BD
+            stats = self.pipeline.db.get_today_stats()
+            
+            # Actualizar labels
+            self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
+            self.stats_labels['entries'].configure(text=f"ENTRADAS: {stats['entries_today']}")
+            self.stats_labels['exits'].configure(text=f"SALIDAS: {stats['exits_today']}")
+            
+            # Ultima entrada
+            if stats['last_entry']:
+                plate = stats['last_entry']['plate']
+                entry_time = datetime.fromisoformat(stats['last_entry']['entry_time'])
+                
+                # Calcular "hace X min"
+                now = datetime.now()
+                diff = now - entry_time
+                minutes_ago = int(diff.total_seconds() / 60)
+                
+                if minutes_ago < 1:
+                    time_str = "hace menos de 1 min"
+                elif minutes_ago < 60:
+                    time_str = f"hace {minutes_ago} min"
+                else:
+                    hours = minutes_ago // 60
+                    time_str = f"hace {hours}h {minutes_ago % 60}min"
+                
+                # Truncar placa si es muy larga
+                if len(plate) > 20:
+                    plate = plate[:17] + "..."
+                
+                self.stats_labels['last_entry_plate'].configure(text=plate)
+                self.stats_labels['last_entry_time'].configure(text=time_str)
+            else:
+                self.stats_labels['last_entry_plate'].configure(text="---")
+                self.stats_labels['last_entry_time'].configure(text="")
+            
+            # Duracion promedio
+            self.stats_labels['avg_duration'].configure(text=f"{stats['avg_duration']} min")
+            
+        except Exception as e:
+            print(f"[APP-WARNING] Error actualizando estadisticas: {str(e)}")
 
     def _play_processed_frames(self, frames, fps):
         """
@@ -506,6 +668,8 @@ class VehicleDetectorApp:
             if i >= len(frames):
                 print("[APP-PLAY] Reproduccion finalizada\n")
                 self.status_label.configure(text="Reproduccion finalizada")
+                # Actualizar stats al final
+                self._update_stats()
                 return
             
             try:
