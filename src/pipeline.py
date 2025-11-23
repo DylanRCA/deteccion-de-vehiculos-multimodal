@@ -1,5 +1,6 @@
 import cv2
 import config
+from datetime import datetime
 from .car_detector import CarDetector
 from .plate_recognizer import PlateRecognizer
 from .classifier import VehicleClassifier
@@ -211,8 +212,8 @@ class VehicleDetectionPipeline:
             dict: {
                 'annotated_image': numpy.ndarray,
                 'detections': list,
-                'tracks': list,  # NUEVO
-                'events': list   # NUEVO
+                'tracks': list,
+                'events': list
             }
         """
         self.frame_count += 1
@@ -248,46 +249,22 @@ class VehicleDetectionPipeline:
                         plate_info = self.plate_recognizer.recognize_plate(vehicle_crop)
                         classification = self.vehicle_classifier.classify(vehicle_crop)
                         
+                        # Generar placa final (con ID temporal si no tiene placa)
+                        plate_text = plate_info['text']
+                        if plate_text in ["SIN PLACA", "NO DETECTADA"]:
+                            # Generar ID temporal
+                            temp_prefix = getattr(config, 'TEMP_PLATE_PREFIX', 'TEMP_')
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            plate_text = f"{temp_prefix}{timestamp}_{track_id}"
+                            print(f"[PIPELINE-VIDEO] Placa no legible, usando ID temporal: {plate_text}")
+                        
                         vehicle_data = {
-                            'plate': plate_info['text'],
+                            'plate': plate_text,
                             'brand': classification['brand'],
                             'color': classification['color']
                         }
                         
-                        # Registrar en BD si esta habilitada
-                        if self.enable_database and self.db:
-                            try:
-                                vehicle_id = self.db.register_vehicle(
-                                    track_id=track_id,
-                                    plate=plate_info['text'],
-                                    brand=classification['brand'],
-                                    color=classification['color']
-                                )
-                                vehicle_data['db_id'] = vehicle_id
-                            except Exception as e:
-                                print(f"[PIPELINE-ERROR] Error registrando vehiculo en BD: {str(e)}")
-                                vehicle_data['db_id'] = None
-                        
                         self.known_vehicles[track_id] = vehicle_data
-                    
-                    # Log deteccion en BD si esta habilitada
-                    # OPTIMIZACION: Solo log cada N frames para reducir overhead
-                    if self.enable_database and self.db and track_id in self.known_vehicles:
-                        vehicle_data = self.known_vehicles[track_id]
-                        if vehicle_data.get('db_id'):
-                            # Solo log cada DB_DETECTION_LOG_INTERVAL frames
-                            log_interval = getattr(config, 'DB_DETECTION_LOG_INTERVAL', 10)
-                            if self.frame_count % log_interval == 0:
-                                try:
-                                    self.db.log_detection(
-                                        vehicle_id=vehicle_data['db_id'],
-                                        bbox=track['bbox'],
-                                        frame_num=self.frame_count
-                                    )
-                                except Exception as e:
-                                    # No bloquear procesamiento por errores de BD
-                                    if self.frame_count % 30 == 0:
-                                        print(f"[PIPELINE-WARNING] Error logging deteccion: {str(e)}")
                 
                 except Exception as e:
                     print(f"[PIPELINE-ERROR] Error procesando track {track_id}: {str(e)}")
@@ -299,26 +276,50 @@ class VehicleDetectionPipeline:
                 try:
                     events = self.event_detector.detect_events(tracks)
                     
-                    # 5. Procesar eventos
+                    # 5. Procesar eventos con NUEVA LOGICA BD
                     for event in events:
                         track_id = event['track_id']
                         vehicle_data = self.known_vehicles.get(track_id)
                         
-                        if vehicle_data and self.enable_database and self.db:
+                        if not vehicle_data:
+                            print(f"[PIPELINE-WARNING] Evento para track {track_id} sin datos de vehiculo")
+                            continue
+                        
+                        plate = vehicle_data['plate']
+                        brand = vehicle_data['brand']
+                        color = vehicle_data['color']
+                        
+                        if self.enable_database and self.db:
                             try:
-                                if vehicle_data.get('db_id'):
-                                    self.db.log_event(
-                                        vehicle_id=vehicle_data['db_id'],
-                                        event_type=event['event'],
-                                        timestamp=event['timestamp'],
-                                        camera_id='cam_01'
-                                    )
+                                if event['event'] == 'entry':
+                                    # ENTRADA: Buscar en active_vehicles
+                                    existing = self.db.find_active_by_plate(plate)
                                     
-                                    # Actualizar estado
-                                    new_status = 'inside' if event['event'] == 'entry' else 'outside'
-                                    self.db.update_vehicle_status(vehicle_data['db_id'], new_status)
+                                    if existing:
+                                        # Ya esta dentro, actualizar track_id
+                                        print(f"[PARKING] {plate} ya registrado dentro, actualizando track_id")
+                                        self.db.update_active_track_id(plate, track_id)
+                                    else:
+                                        # Registrar nueva entrada
+                                        self.db.register_entry(
+                                            plate=plate,
+                                            track_id=track_id,
+                                            brand=brand,
+                                            color=color
+                                        )
+                                        print(f"[PARKING] {plate} ENTRO al estacionamiento")
+                                
+                                elif event['event'] == 'exit':
+                                    # SALIDA: Mover de active_vehicles a parking_history
+                                    session = self.db.register_exit(plate)
+                                    
+                                    if session:
+                                        print(f"[PARKING] {plate} SALIO - Duracion: {session['duration_minutes']} min")
+                                    else:
+                                        print(f"[PARKING-WARNING] {plate} salio sin entrada registrada")
+                                
                             except Exception as e:
-                                print(f"[PIPELINE-ERROR] Error procesando evento: {str(e)}")
+                                print(f"[PIPELINE-ERROR] Error procesando evento {event['event']} para {plate}: {str(e)}")
                 
                 except Exception as e:
                     print(f"[PIPELINE-ERROR] Error en detector de eventos: {str(e)}")
@@ -330,22 +331,19 @@ class VehicleDetectionPipeline:
                 vehicle_data = self.known_vehicles.get(track_id, {})
                 
                 plate_text = vehicle_data.get('plate', 'DESCONOCIDA')
-                has_plate = plate_text not in ["SIN PLACA", "NO DETECTADA", "DESCONOCIDA"]
+                
+                # Determinar si tiene placa legible (no temporal)
+                temp_prefix = getattr(config, 'TEMP_PLATE_PREFIX', 'TEMP_')
+                has_plate = not plate_text.startswith(temp_prefix) and plate_text not in ["DESCONOCIDA", "SIN PLACA"]
                 
                 # CRITICAL: Ensure bbox coords are integers
                 bbox = track['bbox']
                 bbox_int = [int(coord) for coord in bbox]
                 
-                # Debug logging condicional
-                verbose = getattr(config, 'DEBUG_VERBOSE', False)
-                log_interval = getattr(config, 'DEBUG_LOG_INTERVAL', 30)
-                if (self.frame_count % log_interval == 0 or verbose):
-                    print(f"[PIPELINE-DEBUG] Track {track_id}: bbox original={bbox}, bbox_int={bbox_int}")
-                
                 detection_info = {
                     'id': track_id,
-                    'bbox': bbox_int,  # Use integer bbox
-                    'confidence': 0.9,  # Placeholder
+                    'bbox': bbox_int,
+                    'confidence': 0.9,
                     'class': 'car',
                     'Placa': 'SI' if has_plate else 'NO',
                     'Numero-Placa': plate_text if has_plate else '------',

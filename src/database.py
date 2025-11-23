@@ -1,13 +1,18 @@
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 
 class DatabaseManager:
     def __init__(self, db_path='database/estacionamiento.db'):
         """
-        Inicializa el gestor de base de datos con logging detallado.
+        Inicializa el gestor de base de datos para estacionamiento.
+        
+        Esquema:
+        - active_vehicles: Vehiculos dentro del estacionamiento AHORA
+        - parking_history: Sesiones completadas (historico)
+        - vehicle_registry: Catalogo de vehiculos conocidos
         
         Args:
             db_path (str): Ruta a la base de datos SQLite
@@ -57,279 +62,415 @@ class DatabaseManager:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
-            # Tabla de vehiculos
-            print("[DB-INIT] Creando tabla 'vehicles'...")
+            # Tabla 1: Vehiculos actualmente dentro del estacionamiento
+            print("[DB-INIT] Creando tabla 'active_vehicles'...")
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS vehicles (
+                CREATE TABLE IF NOT EXISTS active_vehicles (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    track_id INTEGER UNIQUE,
-                    plate_number TEXT,
+                    plate TEXT NOT NULL,
+                    track_id INTEGER,
+                    brand TEXT,
+                    color TEXT,
+                    entry_time TIMESTAMP NOT NULL,
+                    parking_duration_minutes INTEGER DEFAULT 0
+                )
+            ''')
+            
+            # Tabla 2: Historial de sesiones de estacionamiento
+            print("[DB-INIT] Creando tabla 'parking_history'...")
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS parking_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plate TEXT NOT NULL,
+                    brand TEXT,
+                    color TEXT,
+                    entry_time TIMESTAMP NOT NULL,
+                    exit_time TIMESTAMP NOT NULL,
+                    duration_minutes INTEGER,
+                    source TEXT DEFAULT 'live_camera'
+                )
+            ''')
+            
+            # Tabla 3: Registro de vehiculos conocidos
+            print("[DB-INIT] Creando tabla 'vehicle_registry'...")
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS vehicle_registry (
+                    plate TEXT PRIMARY KEY,
                     brand TEXT,
                     color TEXT,
                     first_seen TIMESTAMP,
                     last_seen TIMESTAMP,
-                    status TEXT
+                    total_visits INTEGER DEFAULT 0,
+                    avg_duration_minutes INTEGER DEFAULT 0
                 )
             ''')
             
-            # Tabla de eventos
-            print("[DB-INIT] Creando tabla 'events'...")
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    vehicle_id INTEGER,
-                    event_type TEXT,
-                    timestamp TIMESTAMP,
-                    camera_id TEXT,
-                    confidence REAL,
-                    plate_confidence REAL,
-                    FOREIGN KEY (vehicle_id) REFERENCES vehicles(id)
-                )
-            ''')
-            
-            # Tabla de detecciones
-            print("[DB-INIT] Creando tabla 'detections'...")
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS detections (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    vehicle_id INTEGER,
-                    timestamp TIMESTAMP,
-                    bbox_x1 INTEGER,
-                    bbox_y1 INTEGER,
-                    bbox_x2 INTEGER,
-                    bbox_y2 INTEGER,
-                    frame_number INTEGER,
-                    image_path TEXT,
-                    FOREIGN KEY (vehicle_id) REFERENCES vehicles(id)
-                )
-            ''')
-            
-            # Indices
+            # Indices para queries rapidas
             print("[DB-INIT] Creando indices...")
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_vehicle ON events(vehicle_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_vehicles_status ON vehicles(status)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_active_plate ON active_vehicles(plate)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_plate ON parking_history(plate)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_times ON parking_history(entry_time, exit_time)')
             
         print("[DB-INIT] Esquema creado exitosamente")
     
-    def register_vehicle(self, track_id, plate, brand, color):
+    # ==================== OPERACIONAL (active_vehicles) ====================
+    
+    def register_entry(self, plate, track_id, brand, color):
         """
-        Registra un nuevo vehiculo en la base de datos.
+        Registra la entrada de un vehiculo al estacionamiento.
         
         Args:
+            plate (str): Numero de placa o ID temporal
             track_id (int): ID del tracker
-            plate (str): Numero de placa
             brand (str): Marca del vehiculo
             color (str): Color del vehiculo
             
         Returns:
-            int: ID del vehiculo en la base de datos
+            int: ID del registro en active_vehicles, o None si ya existe
         """
-        print(f"[DB-REGISTER] Registrando vehiculo - Track ID: {track_id}, Placa: {plate}, Marca: {brand}, Color: {color}")
+        print(f"[DB-ENTRY] Registrando entrada - Placa: {plate}, Track: {track_id}")
         
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Verificar si ya existe
-                cursor.execute('SELECT id FROM vehicles WHERE track_id = ?', (track_id,))
+                # Verificar si ya esta dentro
+                cursor.execute('SELECT id FROM active_vehicles WHERE plate = ?', (plate,))
                 existing = cursor.fetchone()
                 
                 if existing:
-                    vehicle_id = existing['id']
-                    print(f"[DB-REGISTER] Vehiculo ya existe con ID: {vehicle_id}")
-                    return vehicle_id
-                
-                # Insertar nuevo vehiculo
-                now = datetime.now()
-                cursor.execute('''
-                    INSERT INTO vehicles (track_id, plate_number, brand, color, first_seen, last_seen, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (track_id, plate, brand, color, now, now, 'unknown'))
-                
-                vehicle_id = cursor.lastrowid
-                print(f"[DB-REGISTER] Vehiculo registrado exitosamente con ID: {vehicle_id}")
-                return vehicle_id
-                
-        except Exception as e:
-            print(f"[DB-ERROR] Error al registrar vehiculo: {str(e)}")
-            raise
-    
-    def log_event(self, vehicle_id, event_type, timestamp=None, camera_id='cam_01', confidence=1.0, plate_confidence=None):
-        """
-        Registra un evento (entrada/salida).
-        
-        Args:
-            vehicle_id (int): ID del vehiculo en BD
-            event_type (str): Tipo de evento ('entry', 'exit', 'detection')
-            timestamp: Timestamp del evento
-            camera_id (str): ID de la camara
-            confidence (float): Confianza del evento
-            plate_confidence (float): Confianza de la placa
-        """
-        if timestamp is None:
-            timestamp = datetime.now()
-        
-        print(f"[DB-EVENT] Registrando evento - Vehicle ID: {vehicle_id}, Tipo: {event_type}, Timestamp: {timestamp}")
-        
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO events (vehicle_id, event_type, timestamp, camera_id, confidence, plate_confidence)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (vehicle_id, event_type, timestamp, camera_id, confidence, plate_confidence))
-                
-                event_id = cursor.lastrowid
-                print(f"[DB-EVENT] Evento registrado con ID: {event_id}")
-                
-        except Exception as e:
-            print(f"[DB-ERROR] Error al registrar evento: {str(e)}")
-            raise
-    
-    def log_detection(self, vehicle_id, bbox, frame_num, timestamp=None, image_path=None):
-        """
-        Registra una deteccion de vehiculo.
-        
-        Args:
-            vehicle_id (int): ID del vehiculo en BD
-            bbox (list): Bounding box [x1, y1, x2, y2]
-            frame_num (int): Numero de frame
-            timestamp: Timestamp de la deteccion
-            image_path (str): Ruta a snapshot (opcional)
-        """
-        if timestamp is None:
-            timestamp = datetime.now()
-        
-        print(f"[DB-DETECT] Registrando deteccion - Vehicle ID: {vehicle_id}, Frame: {frame_num}, BBox: {bbox}")
-        
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO detections (vehicle_id, timestamp, bbox_x1, bbox_y1, bbox_x2, bbox_y2, frame_number, image_path)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (vehicle_id, timestamp, bbox[0], bbox[1], bbox[2], bbox[3], frame_num, image_path))
-                
-                detection_id = cursor.lastrowid
-                print(f"[DB-DETECT] Deteccion registrada con ID: {detection_id}")
-                
-        except Exception as e:
-            print(f"[DB-ERROR] Error al registrar deteccion: {str(e)}")
-            # No lanzar excepcion para no detener el procesamiento
-            pass
-    
-    def update_vehicle_status(self, vehicle_id, status):
-        """
-        Actualiza el estado de un vehiculo.
-        
-        Args:
-            vehicle_id (int): ID del vehiculo en BD
-            status (str): Nuevo estado ('inside', 'outside', etc.)
-        """
-        print(f"[DB-UPDATE] Actualizando estado - Vehicle ID: {vehicle_id}, Status: {status}")
-        
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE vehicles 
-                    SET status = ?, last_seen = ?
-                    WHERE id = ?
-                ''', (status, datetime.now(), vehicle_id))
-                
-                print(f"[DB-UPDATE] Estado actualizado exitosamente")
-                
-        except Exception as e:
-            print(f"[DB-ERROR] Error al actualizar estado: {str(e)}")
-            raise
-    
-    def get_vehicle_by_track_id(self, track_id):
-        """
-        Obtiene informacion de un vehiculo por su track ID.
-        
-        Args:
-            track_id (int): ID del tracker
-            
-        Returns:
-            dict: Informacion del vehiculo o None
-        """
-        print(f"[DB-QUERY] Buscando vehiculo por track_id: {track_id}")
-        
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT * FROM vehicles WHERE track_id = ?', (track_id,))
-                row = cursor.fetchone()
-                
-                if row:
-                    result = dict(row)
-                    print(f"[DB-QUERY] Vehiculo encontrado: ID={result['id']}")
-                    return result
-                else:
-                    print(f"[DB-QUERY] No se encontro vehiculo con track_id: {track_id}")
-                    return None
+                    import config
+                    if getattr(config, 'PARKING_WARN_DUPLICATE_ENTRY', True):
+                        print(f"[DB-WARNING] Vehiculo {plate} ya esta dentro (posible oclusion larga)")
                     
+                    # Actualizar track_id
+                    cursor.execute('''
+                        UPDATE active_vehicles 
+                        SET track_id = ?
+                        WHERE plate = ?
+                    ''', (track_id, plate))
+                    
+                    return existing['id']
+                
+                # Registrar nueva entrada
+                entry_time = datetime.now()
+                cursor.execute('''
+                    INSERT INTO active_vehicles (plate, track_id, brand, color, entry_time)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (plate, track_id, brand, color, entry_time))
+                
+                active_id = cursor.lastrowid
+                
+                # Actualizar registro de vehiculo
+                self._update_vehicle_registry(plate, brand, color, entry_time)
+                
+                print(f"[DB-ENTRY] Entrada registrada - ID: {active_id}")
+                return active_id
+                
         except Exception as e:
-            print(f"[DB-ERROR] Error en consulta: {str(e)}")
+            print(f"[DB-ERROR] Error al registrar entrada: {str(e)}")
             return None
     
-    def get_vehicles_inside(self):
+    def register_exit(self, plate):
+        """
+        Registra la salida de un vehiculo del estacionamiento.
+        Mueve el registro de active_vehicles a parking_history.
+        
+        Args:
+            plate (str): Numero de placa
+            
+        Returns:
+            dict: Informacion de la sesion completada, o None si no estaba dentro
+        """
+        print(f"[DB-EXIT] Registrando salida - Placa: {plate}")
+        
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Buscar en active_vehicles
+                cursor.execute('SELECT * FROM active_vehicles WHERE plate = ?', (plate,))
+                active = cursor.fetchone()
+                
+                if not active:
+                    import config
+                    if getattr(config, 'PARKING_WARN_NO_EXIT_ENTRY', True):
+                        print(f"[DB-WARNING] Salida sin entrada registrada: {plate}")
+                    return None
+                
+                # Calcular duracion
+                exit_time = datetime.now()
+                entry_time = datetime.fromisoformat(active['entry_time'])
+                duration = exit_time - entry_time
+                duration_minutes = int(duration.total_seconds() / 60)
+                
+                # Insertar en historial
+                cursor.execute('''
+                    INSERT INTO parking_history (plate, brand, color, entry_time, exit_time, duration_minutes, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    active['plate'],
+                    active['brand'],
+                    active['color'],
+                    active['entry_time'],
+                    exit_time,
+                    duration_minutes,
+                    'live_camera'
+                ))
+                
+                history_id = cursor.lastrowid
+                
+                # Eliminar de active_vehicles
+                cursor.execute('DELETE FROM active_vehicles WHERE plate = ?', (plate,))
+                
+                # Actualizar registro
+                self._update_vehicle_registry_on_exit(plate, exit_time, duration_minutes)
+                
+                session = {
+                    'id': history_id,
+                    'plate': active['plate'],
+                    'brand': active['brand'],
+                    'color': active['color'],
+                    'entry_time': entry_time,
+                    'exit_time': exit_time,
+                    'duration_minutes': duration_minutes
+                }
+                
+                print(f"[DB-EXIT] Salida registrada - Duracion: {duration_minutes} min")
+                return session
+                
+        except Exception as e:
+            print(f"[DB-ERROR] Error al registrar salida: {str(e)}")
+            return None
+    
+    def get_active_vehicles(self):
         """
         Obtiene lista de vehiculos actualmente dentro del estacionamiento.
         
         Returns:
-            list: Lista de vehiculos con status='inside'
+            list: Lista de vehiculos activos
         """
-        print(f"[DB-QUERY] Consultando vehiculos dentro del estacionamiento")
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM active_vehicles ORDER BY entry_time DESC')
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"[DB-ERROR] Error consultando vehiculos activos: {str(e)}")
+            return []
+    
+    def find_active_by_plate(self, plate):
+        """
+        Busca un vehiculo en active_vehicles por placa.
+        
+        Args:
+            plate (str): Numero de placa
+            
+        Returns:
+            dict: Informacion del vehiculo o None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM active_vehicles WHERE plate = ?', (plate,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            print(f"[DB-ERROR] Error buscando vehiculo activo: {str(e)}")
+            return None
+    
+    def update_active_track_id(self, plate, new_track_id):
+        """
+        Actualiza el track_id de un vehiculo activo.
+        Util cuando el tracker reinicia y asigna nuevo ID al mismo vehiculo.
+        
+        Args:
+            plate (str): Numero de placa
+            new_track_id (int): Nuevo ID del tracker
+        """
+        print(f"[DB-UPDATE] Actualizando track_id de {plate} a {new_track_id}")
         
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT * FROM vehicles WHERE status = ?', ('inside',))
-                rows = cursor.fetchall()
+                cursor.execute('''
+                    UPDATE active_vehicles 
+                    SET track_id = ?
+                    WHERE plate = ?
+                ''', (new_track_id, plate))
                 
-                results = [dict(row) for row in rows]
-                print(f"[DB-QUERY] Encontrados {len(results)} vehiculos dentro")
-                return results
-                
+                print(f"[DB-UPDATE] Track ID actualizado")
         except Exception as e:
-            print(f"[DB-ERROR] Error en consulta: {str(e)}")
-            return []
+            print(f"[DB-ERROR] Error actualizando track_id: {str(e)}")
     
-    def get_events_by_date(self, date):
+    # ==================== HISTORICO (parking_history) ====================
+    
+    def get_history_by_date(self, date):
         """
-        Obtiene eventos de una fecha especifica.
+        Obtiene sesiones de estacionamiento de una fecha especifica.
         
         Args:
             date (datetime.date): Fecha a consultar
             
         Returns:
-            list: Lista de eventos
+            list: Lista de sesiones
         """
-        print(f"[DB-QUERY] Consultando eventos para fecha: {date}")
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                date_str = date.strftime('%Y-%m-%d')
+                
+                cursor.execute('''
+                    SELECT * FROM parking_history 
+                    WHERE DATE(entry_time) = ?
+                    ORDER BY entry_time DESC
+                ''', (date_str,))
+                
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"[DB-ERROR] Error consultando historial: {str(e)}")
+            return []
+    
+    def get_history_by_plate(self, plate):
+        """
+        Obtiene historial de sesiones de un vehiculo especifico.
         
+        Args:
+            plate (str): Numero de placa
+            
+        Returns:
+            list: Lista de sesiones del vehiculo
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM parking_history 
+                    WHERE plate = ?
+                    ORDER BY entry_time DESC
+                ''', (plate,))
+                
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"[DB-ERROR] Error consultando historial de placa: {str(e)}")
+            return []
+    
+    # ==================== REGISTRO (vehicle_registry) ====================
+    
+    def _update_vehicle_registry(self, plate, brand, color, timestamp):
+        """
+        Actualiza o crea entrada en vehicle_registry al detectar entrada.
+        
+        Args:
+            plate (str): Numero de placa
+            brand (str): Marca
+            color (str): Color
+            timestamp (datetime): Timestamp de la entrada
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Convertir fecha a string para comparacion
-                date_str = date.strftime('%Y-%m-%d')
+                # Buscar si existe
+                cursor.execute('SELECT * FROM vehicle_registry WHERE plate = ?', (plate,))
+                existing = cursor.fetchone()
                 
-                cursor.execute('''
-                    SELECT e.*, v.plate_number, v.brand, v.color
-                    FROM events e
-                    JOIN vehicles v ON e.vehicle_id = v.id
-                    WHERE DATE(e.timestamp) = ?
-                    ORDER BY e.timestamp DESC
-                ''', (date_str,))
-                
-                rows = cursor.fetchall()
-                results = [dict(row) for row in rows]
-                
-                print(f"[DB-QUERY] Encontrados {len(results)} eventos")
-                return results
+                if existing:
+                    # Actualizar
+                    cursor.execute('''
+                        UPDATE vehicle_registry
+                        SET last_seen = ?,
+                            total_visits = total_visits + 1
+                        WHERE plate = ?
+                    ''', (timestamp, plate))
+                else:
+                    # Crear nuevo
+                    cursor.execute('''
+                        INSERT INTO vehicle_registry (plate, brand, color, first_seen, last_seen, total_visits)
+                        VALUES (?, ?, ?, ?, ?, 1)
+                    ''', (plate, brand, color, timestamp, timestamp))
                 
         except Exception as e:
-            print(f"[DB-ERROR] Error en consulta: {str(e)}")
+            print(f"[DB-ERROR] Error actualizando registro: {str(e)}")
+    
+    def _update_vehicle_registry_on_exit(self, plate, timestamp, duration_minutes):
+        """
+        Actualiza vehicle_registry al registrar salida (actualiza promedio de duracion).
+        
+        Args:
+            plate (str): Numero de placa
+            timestamp (datetime): Timestamp de salida
+            duration_minutes (int): Duracion de esta sesion
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('SELECT total_visits, avg_duration_minutes FROM vehicle_registry WHERE plate = ?', (plate,))
+                registry = cursor.fetchone()
+                
+                if registry:
+                    # Calcular nuevo promedio
+                    total_visits = registry['total_visits']
+                    old_avg = registry['avg_duration_minutes'] or 0
+                    
+                    new_avg = ((old_avg * (total_visits - 1)) + duration_minutes) / total_visits
+                    new_avg = int(new_avg)
+                    
+                    cursor.execute('''
+                        UPDATE vehicle_registry
+                        SET last_seen = ?,
+                            avg_duration_minutes = ?
+                        WHERE plate = ?
+                    ''', (timestamp, new_avg, plate))
+                
+        except Exception as e:
+            print(f"[DB-ERROR] Error actualizando registro en salida: {str(e)}")
+    
+    def get_vehicle_stats(self, plate):
+        """
+        Obtiene estadisticas de un vehiculo del registro.
+        
+        Args:
+            plate (str): Numero de placa
+            
+        Returns:
+            dict: Estadisticas del vehiculo o None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM vehicle_registry WHERE plate = ?', (plate,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            print(f"[DB-ERROR] Error consultando estadisticas: {str(e)}")
+            return None
+    
+    def get_frequent_visitors(self, limit=10):
+        """
+        Obtiene vehiculos mas frecuentes (top visitantes).
+        
+        Args:
+            limit (int): Numero de resultados
+            
+        Returns:
+            list: Lista de vehiculos ordenados por total_visits
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM vehicle_registry 
+                    ORDER BY total_visits DESC
+                    LIMIT ?
+                ''', (limit,))
+                
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"[DB-ERROR] Error consultando visitantes frecuentes: {str(e)}")
             return []

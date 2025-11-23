@@ -35,16 +35,23 @@ SNAPSHOT_DIR = 'snapshots/'
 # Guardar snapshot solo en eventos (True) o en cada deteccion (False)
 SNAPSHOT_ONLY_ON_EVENTS = True
 
-# Frecuencia de logging de detecciones en BD (cada N frames)
-# NUEVO: Reducir escrituras a BD para mejor performance
-DB_DETECTION_LOG_INTERVAL = 10  # Log cada 10 frames en lugar de cada frame
+# Origen de datos (para diferenciar camara en vivo vs analisis de video)
+DB_SOURCE_LIVE = 'live_camera'
+DB_SOURCE_VIDEO = 'video_analysis'
+
+# Prefijo para placas temporales (vehiculos sin placa legible)
+TEMP_PLATE_PREFIX = 'TEMP_'
+
+# Advertencias de anomalias
+PARKING_WARN_NO_EXIT_ENTRY = True  # Advertir si vehiculo sale sin haber entrado
+PARKING_WARN_DUPLICATE_ENTRY = True  # Advertir si vehiculo entra estando dentro
 
 
 # ==================== EVENTOS ====================
 # Configuracion de deteccion de entrada/salida
 
 # Posicion Y de la linea virtual (pixeles desde arriba)
-EVENT_LINE_POSITION = 400
+EVENT_LINE_POSITION = 200
 
 # Direccion de entrada: 'down' (hacia abajo) o 'up' (hacia arriba)
 EVENT_ENTRY_DIRECTION = 'down'
