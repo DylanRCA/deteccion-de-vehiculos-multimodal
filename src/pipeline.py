@@ -232,22 +232,33 @@ class VehicleDetectionPipeline:
             # 2. Tracking - asignar IDs
             tracks = self.tracker.update(vehicle_detections)
             
-            # 3. Para cada track, clasificar si es nuevo
+            # 3. Para cada track, clasificar si es nuevo o actualizar bbox
             for track in tracks:
                 track_id = track['id']
                 
                 try:
+                    # Convert bbox coords to int
+                    x1, y1, x2, y2 = track['bbox']
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                    
+                    # Validar dimensiones minimas
+                    if x2 - x1 < 20 or y2 - y1 < 20:
+                        continue
+                    
+                    vehicle_crop = frame[y1:y2, x1:x2]
+                    
                     if track_id not in self.known_vehicles:
                         # Vehiculo nuevo, clasificar
-                        # CRITICAL: Convert bbox coords to int
-                        x1, y1, x2, y2 = track['bbox']
-                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                        vehicle_crop = frame[y1:y2, x1:x2]
-                        
                         print(f"[PIPELINE-VIDEO] Nuevo vehiculo detectado - Track ID: {track_id}")
                         
                         plate_info = self.plate_recognizer.recognize_plate(vehicle_crop)
                         classification = self.vehicle_classifier.classify(vehicle_crop)
+                        
+                        # DEBUG: Verificar que se detectó la placa
+                        print(f"[DEBUG-PLATE] Track {track_id}:")
+                        print(f"  - plate_info: {plate_info}")
+                        print(f"  - plate_bbox: {plate_info['bbox']}")
+                        print(f"  - brand_bbox: {classification['brand_bbox']}")
                         
                         # Generar placa final (con ID temporal si no tiene placa)
                         plate_text = plate_info['text']
@@ -258,13 +269,58 @@ class VehicleDetectionPipeline:
                             plate_text = f"{temp_prefix}{timestamp}_{track_id}"
                             print(f"[PIPELINE-VIDEO] Placa no legible, usando ID temporal: {plate_text}")
                         
+                        # Guardar bbox de placa y logo
                         vehicle_data = {
                             'plate': plate_text,
+                            'plate_bbox': [int(x) for x in plate_info['bbox']] if plate_info['bbox'] else None,
                             'brand': classification['brand'],
-                            'color': classification['color']
+                            'brand_bbox': [int(x) for x in classification['brand_bbox']] if classification['brand_bbox'] else None,
+                            'color': classification['color'],
+                            'last_redetection_frame': self.frame_count
                         }
                         
+                        print(f"[DEBUG-CACHE] Guardando en cache: {vehicle_data}")
                         self.known_vehicles[track_id] = vehicle_data
+                    
+                    else:
+                        # Vehiculo existente - Re-detectar bbox cada 15 frames o si falta info
+                        vehicle_data = self.known_vehicles[track_id]
+                        last_redetection = vehicle_data.get('last_redetection_frame', 0)
+                        frames_since_redetection = self.frame_count - last_redetection
+                        
+                        # Re-detectar si: 1) faltan bbox, 2) cada 15 frames
+                        needs_redetection = (
+                            vehicle_data.get('plate_bbox') is None or
+                            vehicle_data.get('brand_bbox') is None or
+                            frames_since_redetection >= 2
+                        )
+                        
+                        if needs_redetection:
+                            # Re-detectar solo placa y logo (marca/color ya conocidos)
+                            plate_info = self.plate_recognizer.recognize_plate(vehicle_crop)
+                            classification = self.vehicle_classifier.classify(vehicle_crop)
+                            
+                            # Actualizar bbox manteniendo placa/marca/color originales
+                            if plate_info['bbox'] is not None:
+                                vehicle_data['plate_bbox'] = [int(x) for x in plate_info['bbox']]
+                                
+                                # NUEVO: Actualizar texto de placa si se detectó una real
+                                plate_text = plate_info['text']
+                                temp_prefix = getattr(config, 'TEMP_PLATE_PREFIX', 'TEMP_')
+                                
+                                # Si placa actual es temporal Y se detectó una real, actualizar
+                                if (vehicle_data['plate'].startswith(temp_prefix) and 
+                                    plate_text not in ["SIN PLACA", "NO DETECTADA"]):
+                                    vehicle_data['plate'] = plate_text
+                                    print(f"[PIPELINE-VIDEO] Placa real detectada para track {track_id}: {plate_text}")
+                            
+                            if classification['brand_bbox'] is not None:
+                                vehicle_data['brand_bbox'] = [int(x) for x in classification['brand_bbox']]
+                            
+                            vehicle_data['last_redetection_frame'] = self.frame_count
+                            
+                            if self.frame_count % log_interval == 0:
+                                print(f"[PIPELINE-VIDEO] Re-deteccion bbox para track {track_id}")
                 
                 except Exception as e:
                     print(f"[PIPELINE-ERROR] Error procesando track {track_id}: {str(e)}")
@@ -340,6 +396,17 @@ class VehicleDetectionPipeline:
                 bbox = track['bbox']
                 bbox_int = [int(coord) for coord in bbox]
                 
+                # Recuperar bbox de placa y logo del cache
+                plate_bbox = vehicle_data.get('plate_bbox', None)
+                brand_bbox = vehicle_data.get('brand_bbox', None)
+                
+                # DEBUG: Verificar recuperación de bbox
+                if self.frame_count % log_interval == 0:
+                    print(f"[DEBUG-PREP] Track {track_id}:")
+                    print(f"  - has_plate: {has_plate}")
+                    print(f"  - plate_bbox: {plate_bbox}")
+                    print(f"  - brand_bbox: {brand_bbox}")
+                
                 detection_info = {
                     'id': track_id,
                     'bbox': bbox_int,
@@ -347,9 +414,9 @@ class VehicleDetectionPipeline:
                     'class': 'car',
                     'Placa': 'SI' if has_plate else 'NO',
                     'Numero-Placa': plate_text if has_plate else '------',
-                    'plate_bbox': None,
+                    'plate_bbox': plate_bbox,
                     'brand': vehicle_data.get('brand', 'DESCONOCIDA'),
-                    'brand_bbox': None,
+                    'brand_bbox': brand_bbox,
                     'color': vehicle_data.get('color', 'DESCONOCIDO')
                 }
                 
@@ -426,27 +493,49 @@ class VehicleDetectionPipeline:
                 # Rectangulo del vehiculo (verde)
                 cv2.rectangle(output, (vx1, vy1), (vx2, vy2), (0, 255, 0), 2)
             
+                # DEBUG: Log solo para primer vehiculo o si DEBUG_VERBOSE
+                debug_verbose = getattr(config, 'DEBUG_VERBOSE', False)
+                if debug_verbose or det['id'] == 1:
+                    print(f"[DEBUG-DRAW] Vehiculo {det['id']}:")
+                    print(f"  - Placa flag: {det['Placa']}")
+                    print(f"  - plate_bbox: {det['plate_bbox']}")
+                    print(f"  - brand_bbox: {det['brand_bbox']}")
+                
                 # Dibujar cuadro de la placa si fue detectada (amarillo)
                 if det['plate_bbox'] is not None and det['Placa'] == 'SI':
-                    px1, py1, px2, py2 = det['plate_bbox']
-                    abs_px1 = int(vx1 + px1)
-                    abs_py1 = int(vy1 + py1)
-                    abs_px2 = int(vx1 + px2)
-                    abs_py2 = int(vy1 + py2)
-                    
-                    cv2.rectangle(output, (abs_px1, abs_py1), (abs_px2, abs_py2), 
-                                (0, 255, 255), 2)
+                    try:
+                        px1, py1, px2, py2 = det['plate_bbox']
+                        abs_px1 = int(vx1 + px1)
+                        abs_py1 = int(vy1 + py1)
+                        abs_px2 = int(vx1 + px2)
+                        abs_py2 = int(vy1 + py2)
+                        
+                        # Validar que esten dentro de limites
+                        if (0 <= abs_px1 < w and 0 <= abs_py1 < h and 
+                            0 <= abs_px2 < w and 0 <= abs_py2 < h and
+                            abs_px2 > abs_px1 and abs_py2 > abs_py1):
+                            cv2.rectangle(output, (abs_px1, abs_py1), (abs_px2, abs_py2), 
+                                        (0, 255, 255), 2)
+                    except Exception as e:
+                        pass  # Silenciar errores de bbox invalidos
                 
                 # Dibujar cuadro del logo de marca si fue detectado (azul)
                 if det['brand_bbox'] is not None and det['brand'] != 'DESCONOCIDA':
-                    bx1, by1, bx2, by2 = det['brand_bbox']
-                    abs_bx1 = int(vx1 + bx1)
-                    abs_by1 = int(vy1 + by1)
-                    abs_bx2 = int(vx1 + bx2)
-                    abs_by2 = int(vy1 + by2)
-                    
-                    cv2.rectangle(output, (abs_bx1, abs_by1), (abs_bx2, abs_by2), 
-                                (255, 0, 0), 2)
+                    try:
+                        bx1, by1, bx2, by2 = det['brand_bbox']
+                        abs_bx1 = int(vx1 + bx1)
+                        abs_by1 = int(vy1 + by1)
+                        abs_bx2 = int(vx1 + bx2)
+                        abs_by2 = int(vy1 + by2)
+                        
+                        # Validar que esten dentro de limites
+                        if (0 <= abs_bx1 < w and 0 <= abs_by1 < h and 
+                            0 <= abs_bx2 < w and 0 <= abs_by2 < h and
+                            abs_bx2 > abs_bx1 and abs_by2 > abs_by1):
+                            cv2.rectangle(output, (abs_bx1, abs_by1), (abs_bx2, abs_by2), 
+                                        (255, 0, 0), 2)
+                    except Exception as e:
+                        pass  # Silenciar errores de bbox invalidos
                 
                 # Dibujar ID del vehiculo
                 info_lines = [
