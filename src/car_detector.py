@@ -9,22 +9,22 @@ class CarDetector:
         Inicializa el detector de vehiculos usando YOLOv8.
         
         Args:
-            model_path (str): Ruta al modelo YOLO. Si es None, usa yolov8n.pt por defecto.
+            model_path (str): Ruta al modelo YOLO. Si es None, usa car_detector.pt de /models
             min_confidence (float): Confianza minima para aceptar detecciones (0.0-1.0)
         """
         if model_path is None:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             model_path = os.path.join(project_root, 'models', 'car_detector.pt')
-            
-            print(f"[DEBUG] Buscando modelo YOLO en: {model_path}")
-            
-            # Si no existe el modelo personalizado, usar el preentrenado de YOLO
-            if not os.path.exists(model_path):
-                print("[DEBUG] Modelo personalizado no encontrado, usando yolov8n.pt")
-                model_path = 'yolov8n.pt'
-            else:
-                print(f"[DEBUG] Modelo personalizado encontrado. Tamano: {os.path.getsize(model_path) / (1024*1024):.2f} MB")
         
+        print(f"[DEBUG] Buscando modelo YOLO en: {model_path}")
+        
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Modelo no encontrado: {model_path}\n"
+                f"Descarga el modelo desde Google Drive y colocalo en /models/car_detector.pt"
+            )
+        
+        print(f"[DEBUG] Modelo encontrado. Tamano: {os.path.getsize(model_path) / (1024*1024):.2f} MB")
         print(f"[DEBUG] Cargando modelo YOLO: {model_path}")
         self.model = YOLO(model_path)
         print(f"[DEBUG] Modelo YOLO cargado. Clases: {self.model.names}")

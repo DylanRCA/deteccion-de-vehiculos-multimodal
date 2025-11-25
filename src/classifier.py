@@ -18,32 +18,36 @@ class VehicleClassifier:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             model_path = os.path.join(project_root, 'models', 'brand_detector.pt')
         
-        if os.path.exists(model_path):
-            print(f"[DEBUG] Cargando modelo YOLO de logos: {model_path}")
-            self.brand_detector = YOLO(model_path)
-            print("[DEBUG] Modelo de logos cargado exitosamente")
-            
-            # Nombres de marcas (deben coincidir con el orden del modelo)
-            self.brand_names = {
-                0: 'Audi',
-                1: 'BMW',
-                2: 'Chevrolet',
-                3: 'Ford',
-                4: 'Honda',
-                5: 'Hyundai',
-                6: 'KIA',
-                7: 'Mazda',
-                8: 'Mercedes',
-                9: 'Mitsubishi',
-                10: 'Nissan',
-                11: 'Suzuki',
-                12: 'Toyota',
-                13: 'Volkswagen'
-            }
-        else:
-            print("[DEBUG] Modelo de logos no encontrado, usando placeholder")
-            self.brand_detector = None
-            self.brand_names = {}
+        print(f"[DEBUG] Buscando modelo YOLO de logos: {model_path}")
+        
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Modelo no encontrado: {model_path}\n"
+                f"Descarga el modelo desde Google Drive y colocalo en /models/brand_detector.pt"
+            )
+        
+        print(f"[DEBUG] Modelo encontrado. Tamano: {os.path.getsize(model_path) / (1024*1024):.2f} MB")
+        print(f"[DEBUG] Cargando modelo YOLO de logos: {model_path}")
+        self.brand_detector = YOLO(model_path)
+        print("[DEBUG] Modelo de logos cargado exitosamente")
+        
+        # Nombres de marcas (deben coincidir con el orden del modelo)
+        self.brand_names = {
+            0: 'Audi',
+            1: 'BMW',
+            2: 'Chevrolet',
+            3: 'Ford',
+            4: 'Honda',
+            5: 'Hyundai',
+            6: 'KIA',
+            7: 'Mazda',
+            8: 'Mercedes',
+            9: 'Mitsubishi',
+            10: 'Nissan',
+            11: 'Suzuki',
+            12: 'Toyota',
+            13: 'Volkswagen'
+        }
         
         # Colores detectables por heuristica HSV
         self.colors = {
@@ -102,12 +106,6 @@ class VehicleClassifier:
                 'brand_bbox': list|None # [x1, y1, x2, y2] o None
             }
         """
-        if self.brand_detector is None:
-            return {
-                'brand': "DESCONOCIDA",
-                'brand_bbox': None
-            }
-        
         try:
             # Detectar logos con YOLO
             results = self.brand_detector(vehicle_image, verbose=False)
