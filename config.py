@@ -103,3 +103,8 @@ DEBUG_LOG_INTERVAL = 30
 # Reducir logs de deteccion en BD (solo cada N frames)
 # Esto evita saturar la consola y la BD
 REDUCE_DB_LOGGING = True
+
+# Intervalo de re-deteccion de bbox de placa y logo (frames)
+# OPTIMIZADO: Reduce carga de OCR y deteccion de logos
+REDETECTION_INTERVAL_CAMERA = 30  # Camara: cada 1 segundo a 30fps
+REDETECTION_INTERVAL_VIDEO = 5    # Video: cada 5 frames para precision

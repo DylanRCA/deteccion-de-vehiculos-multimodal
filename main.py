@@ -12,6 +12,7 @@ from datetime import datetime
 # Agregar src al path para importar modulos
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
+import config
 from src.pipeline import VehicleDetectionPipeline
 
 
@@ -60,9 +61,11 @@ class VehicleDetectorApp:
         try:
             print("\n[APP-INIT] Iniciando carga del pipeline...")
             
+            # Por defecto video (para imagenes y videos)
             self.pipeline = VehicleDetectionPipeline(
                 enable_database=True,
-                enable_events=True
+                enable_events=True,
+                mode='video'
             )
             
             print("[APP-INIT] Pipeline cargado exitosamente\n")
@@ -346,6 +349,9 @@ class VehicleDetectorApp:
             # Reset pipeline antes de procesar nuevo video
             if self.pipeline:
                 self.pipeline.reset()
+                self.pipeline.mode = 'video'
+                self.pipeline.redetection_interval = getattr(config, 'REDETECTION_INTERVAL_VIDEO', 5)
+                print(f"[APP-VIDEO] Modo video activado - Intervalo: {self.pipeline.redetection_interval}")
             
             print(f"[APP-VIDEO] Iniciando procesamiento de video: {file_path}")
             threading.Thread(
@@ -456,8 +462,12 @@ class VehicleDetectorApp:
             self._update_stats_mode_label()
             
             # Reset pipeline antes de iniciar camara
+            # Reset pipeline Y cambiar a modo camara
             if self.pipeline:
                 self.pipeline.reset()
+                self.pipeline.mode = 'camera'
+                self.pipeline.redetection_interval = getattr(config, 'REDETECTION_INTERVAL_CAMERA', 30)
+                print(f"[APP-CAMERA] Modo camara activado - Intervalo: {self.pipeline.redetection_interval}")
             
             self.camera_active = True
             self.btn_camera.configure(text="Detener Camara", fg_color="red")

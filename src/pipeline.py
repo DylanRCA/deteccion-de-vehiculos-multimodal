@@ -10,7 +10,12 @@ from .event_detector import EventDetector
 
 
 class VehicleDetectionPipeline:
-    def __init__(self, car_min_confidence=0.4, enable_database=True, enable_events=True):
+    def __init__(self, car_min_confidence=0.4, enable_database=True, enable_events=True, mode='video'):
+        """
+        Args:
+            ...
+            mode (str): 'camera' o 'video' - determina intervalo de re-deteccion
+        """
         """
         Inicializa el pipeline completo de deteccion de vehiculos.
         Orquesta todos los modelos: detector, OCR, clasificador, tracker, DB y eventos.
@@ -75,6 +80,14 @@ class VehicleDetectionPipeline:
         
         # Estado
         self.frame_count = 0
+        # Configuracion de modo (camera vs video)
+        self.mode = mode
+        if mode == 'camera':
+            self.redetection_interval = getattr(config, 'REDETECTION_INTERVAL_CAMERA', 30)
+        else:
+            self.redetection_interval = getattr(config, 'REDETECTION_INTERVAL_VIDEO', 5)
+
+        print(f"[PIPELINE-INIT] Modo: {mode}, Intervalo re-deteccion: {self.redetection_interval} frames")
         self.known_vehicles = {}  # track_id -> vehicle_info (cache)
         
         print("\n" + "="*80)
@@ -289,7 +302,7 @@ class VehicleDetectionPipeline:
                         frames_since_redetection = self.frame_count - last_redetection
                         
                         # Obtener intervalo de config
-                        redetection_interval = getattr(config, 'REDETECTION_INTERVAL', 30)
+                        redetection_interval = self.redetection_interval
 
                         needs_redetection = (
                             vehicle_data.get('plate_bbox') is None or
