@@ -26,7 +26,7 @@ class VehicleDetectorApp:
         
         self.root = ctk.CTk()
         self.root.title("Detector de Vehiculos - Peru")
-        self.root.geometry("1400x800")  # Aumentado de 1200 a 1400 para panel stats
+        self.root.geometry("1400x800")
         
         # Configurar tema
         ctk.set_appearance_mode("dark")
@@ -37,6 +37,9 @@ class VehicleDetectorApp:
         self.current_image = None
         self.camera_active = False
         self.video_capture = None
+        
+        # Estado de modo (para saber si mostrar stats de video o BD)
+        self.current_mode = None  # 'camera', 'video', o 'image'
         
         # Contador de frames para actualizar stats
         self.frame_counter = 0
@@ -178,13 +181,22 @@ class VehicleDetectorApp:
         stats_frame.pack(side="right", fill="y")
         stats_frame.pack_propagate(False)
         
-        # Titulo
-        stats_title = ctk.CTkLabel(
+        # Titulo con indicador de modo
+        self.stats_title = ctk.CTkLabel(
             stats_frame,
             text="ESTADISTICAS",
             font=("Arial", 18, "bold")
         )
-        stats_title.pack(pady=20)
+        self.stats_title.pack(pady=20)
+        
+        # Indicador de modo
+        self.stats_mode_label = ctk.CTkLabel(
+            stats_frame,
+            text="",
+            font=("Arial", 10),
+            text_color="gray"
+        )
+        self.stats_mode_label.pack(pady=(0, 10))
         
         # Separador
         ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=10)
@@ -245,7 +257,7 @@ class VehicleDetectorApp:
         # Separador
         ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=15)
         
-        # DURACION PROMEDIO
+        # DURACION PROMEDIO (solo en modo camara/BD)
         ctk.CTkLabel(
             stats_frame,
             text="DURACION PROM:",
@@ -254,7 +266,7 @@ class VehicleDetectorApp:
         
         self.stats_labels['avg_duration'] = ctk.CTkLabel(
             stats_frame,
-            text="0 min",
+            text="---",
             font=("Arial", 14)
         )
         self.stats_labels['avg_duration'].pack(pady=2, padx=20, anchor="w")
@@ -269,7 +281,7 @@ class VehicleDetectorApp:
         )
         self.btn_refresh_stats.pack(pady=20, padx=20)
         
-        # Inicializar stats vacías
+        # Inicializar stats vacias
         self._update_stats()
     
     def _load_image(self):
@@ -298,10 +310,14 @@ class VehicleDetectorApp:
                 
                 print(f"[APP-IMAGE] Imagen cargada - Dimensiones: {self.current_image.shape}")
                 
+                self.current_mode = 'image'
                 self._display_image(self.current_image)
                 self.info_text.delete("1.0", "end")
                 self.info_text.insert("1.0", "Imagen cargada. Presione 'Procesar'.")
                 self.status_label.configure(text="Imagen cargada")
+                
+                # Limpiar stats en modo imagen
+                self._clear_stats()
                 
             except Exception as e:
                 error_msg = traceback.format_exc()
@@ -323,7 +339,11 @@ class VehicleDetectorApp:
         )
         
         if file_path:
-            # IMPORTANTE: Resetear pipeline antes de procesar nuevo video
+            # Cambiar modo a video
+            self.current_mode = 'video'
+            self._update_stats_mode_label()
+            
+            # Reset pipeline antes de procesar nuevo video
             if self.pipeline:
                 self.pipeline.reset()
             
@@ -396,6 +416,9 @@ class VehicleDetectorApp:
                 if frame_idx % 5 == 0 and self.pipeline:
                     try:
                         self._update_info_text(detections)
+                        # Actualizar stats de video cada 30 frames
+                        if frame_idx % 30 == 0:
+                            self._update_stats()
                     except Exception as e:
                         print(f"[APP-WARNING] Error actualizando UI: {str(e)}")
 
@@ -409,6 +432,9 @@ class VehicleDetectorApp:
             self.progress.set(1)
             self.progress_label.configure(text="100%")
             self.status_label.configure(text="Video procesado, reproduciendo...")
+            
+            # Actualizar stats finales
+            self._update_stats()
 
             print("[APP-VIDEO] Iniciando reproduccion...\n")
             self._play_processed_frames(annotated_frames, fps)
@@ -425,7 +451,11 @@ class VehicleDetectorApp:
         if not self.camera_active:
             print("\n[APP-CAMERA] Activando camara...")
             
-            # IMPORTANTE: Resetear pipeline antes de iniciar camara
+            # Cambiar modo a camara
+            self.current_mode = 'camera'
+            self._update_stats_mode_label()
+            
+            # Reset pipeline antes de iniciar camara
             if self.pipeline:
                 self.pipeline.reset()
             
@@ -594,59 +624,123 @@ class VehicleDetectorApp:
         except Exception as e:
             print(f"[APP-WARNING] Error actualizando info text: {str(e)}")
     
+    def _update_stats_mode_label(self):
+        """
+        Actualiza el label que indica el modo de stats.
+        """
+        if self.current_mode == 'video':
+            self.stats_mode_label.configure(text="(Video - Temporal)")
+        elif self.current_mode == 'camera':
+            self.stats_mode_label.configure(text="(Camara - Base de Datos)")
+        else:
+            self.stats_mode_label.configure(text="")
+    
+    def _clear_stats(self):
+        """
+        Limpia el panel de estadisticas.
+        """
+        self.stats_labels['inside'].configure(text="DENTRO: ---")
+        self.stats_labels['entries'].configure(text="ENTRADAS: ---")
+        self.stats_labels['exits'].configure(text="SALIDAS: ---")
+        self.stats_labels['last_entry_plate'].configure(text="---")
+        self.stats_labels['last_entry_time'].configure(text="")
+        self.stats_labels['avg_duration'].configure(text="---")
+        self.stats_mode_label.configure(text="")
+    
     def _update_stats(self):
         """
-        Actualiza el panel de estadisticas.
+        Actualiza el panel de estadisticas segun el modo actual.
         """
         try:
-            if not self.pipeline or not self.pipeline.enable_database or not self.pipeline.db:
-                # Si BD no esta habilitada, mostrar valores por defecto
-                self.stats_labels['inside'].configure(text="DENTRO: 0")
-                self.stats_labels['entries'].configure(text="ENTRADAS: 0")
-                self.stats_labels['exits'].configure(text="SALIDAS: 0")
-                self.stats_labels['last_entry_plate'].configure(text="---")
-                self.stats_labels['last_entry_time'].configure(text="")
-                self.stats_labels['avg_duration'].configure(text="0 min")
+            if not self.pipeline:
+                self._clear_stats()
                 return
             
-            # Obtener estadisticas de BD
-            stats = self.pipeline.db.get_today_stats()
-            
-            # Actualizar labels
-            self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
-            self.stats_labels['entries'].configure(text=f"ENTRADAS: {stats['entries_today']}")
-            self.stats_labels['exits'].configure(text=f"SALIDAS: {stats['exits_today']}")
-            
-            # Ultima entrada
-            if stats['last_entry']:
-                plate = stats['last_entry']['plate']
-                entry_time = datetime.fromisoformat(stats['last_entry']['entry_time'])
+            # Modo VIDEO: Stats temporales en memoria
+            if self.current_mode == 'video':
+                stats = self.pipeline.get_video_stats()
                 
-                # Calcular "hace X min"
-                now = datetime.now()
-                diff = now - entry_time
-                minutes_ago = int(diff.total_seconds() / 60)
+                self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
+                self.stats_labels['entries'].configure(text=f"ENTRADAS: {stats['entries']}")
+                self.stats_labels['exits'].configure(text=f"SALIDAS: {stats['exits']}")
                 
-                if minutes_ago < 1:
-                    time_str = "hace menos de 1 min"
-                elif minutes_ago < 60:
-                    time_str = f"hace {minutes_ago} min"
+                # Ultima entrada
+                if stats['last_entry']:
+                    plate = stats['last_entry']['plate']
+                    entry_time = stats['last_entry']['timestamp']
+                    
+                    # Calcular "hace X min"
+                    now = datetime.now()
+                    diff = now - entry_time
+                    minutes_ago = int(diff.total_seconds() / 60)
+                    
+                    if minutes_ago < 1:
+                        time_str = "hace menos de 1 min"
+                    elif minutes_ago < 60:
+                        time_str = f"hace {minutes_ago} min"
+                    else:
+                        hours = minutes_ago // 60
+                        time_str = f"hace {hours}h {minutes_ago % 60}min"
+                    
+                    # Truncar placa si es muy larga
+                    if len(plate) > 20:
+                        plate = plate[:17] + "..."
+                    
+                    self.stats_labels['last_entry_plate'].configure(text=plate)
+                    self.stats_labels['last_entry_time'].configure(text=time_str)
                 else:
-                    hours = minutes_ago // 60
-                    time_str = f"hace {hours}h {minutes_ago % 60}min"
+                    self.stats_labels['last_entry_plate'].configure(text="---")
+                    self.stats_labels['last_entry_time'].configure(text="")
                 
-                # Truncar placa si es muy larga
-                if len(plate) > 20:
-                    plate = plate[:17] + "..."
-                
-                self.stats_labels['last_entry_plate'].configure(text=plate)
-                self.stats_labels['last_entry_time'].configure(text=time_str)
-            else:
-                self.stats_labels['last_entry_plate'].configure(text="---")
-                self.stats_labels['last_entry_time'].configure(text="")
+                # Duracion promedio no disponible en modo video
+                self.stats_labels['avg_duration'].configure(text="N/A")
             
-            # Duracion promedio
-            self.stats_labels['avg_duration'].configure(text=f"{stats['avg_duration']} min")
+            # Modo CAMARA: Stats de BD
+            elif self.current_mode == 'camera':
+                if not self.pipeline.enable_database or not self.pipeline.db:
+                    self._clear_stats()
+                    return
+                
+                stats = self.pipeline.db.get_today_stats()
+                
+                self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
+                self.stats_labels['entries'].configure(text=f"ENTRADAS: {stats['entries_today']}")
+                self.stats_labels['exits'].configure(text=f"SALIDAS: {stats['exits_today']}")
+                
+                # Ultima entrada
+                if stats['last_entry']:
+                    plate = stats['last_entry']['plate']
+                    entry_time = datetime.fromisoformat(stats['last_entry']['entry_time'])
+                    
+                    # Calcular "hace X min"
+                    now = datetime.now()
+                    diff = now - entry_time
+                    minutes_ago = int(diff.total_seconds() / 60)
+                    
+                    if minutes_ago < 1:
+                        time_str = "hace menos de 1 min"
+                    elif minutes_ago < 60:
+                        time_str = f"hace {minutes_ago} min"
+                    else:
+                        hours = minutes_ago // 60
+                        time_str = f"hace {hours}h {minutes_ago % 60}min"
+                    
+                    # Truncar placa si es muy larga
+                    if len(plate) > 20:
+                        plate = plate[:17] + "..."
+                    
+                    self.stats_labels['last_entry_plate'].configure(text=plate)
+                    self.stats_labels['last_entry_time'].configure(text=time_str)
+                else:
+                    self.stats_labels['last_entry_plate'].configure(text="---")
+                    self.stats_labels['last_entry_time'].configure(text="")
+                
+                # Duracion promedio
+                self.stats_labels['avg_duration'].configure(text=f"{stats['avg_duration']} min")
+            
+            # Modo IMAGEN o SIN MODO: Limpiar
+            else:
+                self._clear_stats()
             
         except Exception as e:
             print(f"[APP-WARNING] Error actualizando estadisticas: {str(e)}")
