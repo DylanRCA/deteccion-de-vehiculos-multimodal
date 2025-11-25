@@ -255,10 +255,10 @@ class VehicleDetectionPipeline:
                         classification = self.vehicle_classifier.classify(vehicle_crop)
                         
                         # DEBUG: Verificar que se detectó la placa
-                        print(f"[DEBUG-PLATE] Track {track_id}:")
+                        """ print(f"[DEBUG-PLATE] Track {track_id}:")
                         print(f"  - plate_info: {plate_info}")
                         print(f"  - plate_bbox: {plate_info['bbox']}")
-                        print(f"  - brand_bbox: {classification['brand_bbox']}")
+                        print(f"  - brand_bbox: {classification['brand_bbox']}") """
                         
                         # Generar placa final (con ID temporal si no tiene placa)
                         plate_text = plate_info['text']
@@ -279,7 +279,7 @@ class VehicleDetectionPipeline:
                             'last_redetection_frame': self.frame_count
                         }
                         
-                        print(f"[DEBUG-CACHE] Guardando en cache: {vehicle_data}")
+                        # print(f"[DEBUG-CACHE] Guardando en cache: {vehicle_data}")
                         self.known_vehicles[track_id] = vehicle_data
                     
                     else:
@@ -288,11 +288,13 @@ class VehicleDetectionPipeline:
                         last_redetection = vehicle_data.get('last_redetection_frame', 0)
                         frames_since_redetection = self.frame_count - last_redetection
                         
-                        # Re-detectar si: 1) faltan bbox, 2) cada 15 frames
+                        # Obtener intervalo de config
+                        redetection_interval = getattr(config, 'REDETECTION_INTERVAL', 30)
+
                         needs_redetection = (
                             vehicle_data.get('plate_bbox') is None or
                             vehicle_data.get('brand_bbox') is None or
-                            frames_since_redetection >= 2
+                            frames_since_redetection >= redetection_interval
                         )
                         
                         if needs_redetection:
@@ -319,8 +321,8 @@ class VehicleDetectionPipeline:
                             
                             vehicle_data['last_redetection_frame'] = self.frame_count
                             
-                            if self.frame_count % log_interval == 0:
-                                print(f"[PIPELINE-VIDEO] Re-deteccion bbox para track {track_id}")
+                            #if self.frame_count % log_interval == 0:
+                                #print(f"[PIPELINE-VIDEO] Re-deteccion bbox para track {track_id}")
                 
                 except Exception as e:
                     print(f"[PIPELINE-ERROR] Error procesando track {track_id}: {str(e)}")
@@ -401,11 +403,11 @@ class VehicleDetectionPipeline:
                 brand_bbox = vehicle_data.get('brand_bbox', None)
                 
                 # DEBUG: Verificar recuperación de bbox
-                if self.frame_count % log_interval == 0:
-                    print(f"[DEBUG-PREP] Track {track_id}:")
-                    print(f"  - has_plate: {has_plate}")
-                    print(f"  - plate_bbox: {plate_bbox}")
-                    print(f"  - brand_bbox: {brand_bbox}")
+                #if self.frame_count % log_interval == 0:
+                    #print(f"[DEBUG-PREP] Track {track_id}:")
+                    #print(f"  - has_plate: {has_plate}")
+                    #print(f"  - plate_bbox: {plate_bbox}")
+                    #print(f"  - brand_bbox: {brand_bbox}")
                 
                 detection_info = {
                     'id': track_id,
