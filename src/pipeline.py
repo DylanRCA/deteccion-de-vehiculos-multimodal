@@ -245,6 +245,11 @@ class VehicleDetectionPipeline:
             # 2. Tracking - asignar IDs
             tracks = self.tracker.update(vehicle_detections)
             
+            # NUEVO: Filtrar tracks que no fueron detectados recientemente
+            # Solo mostrar vehiculos que fueron vistos recientemente
+            max_frames_without_detection = getattr(config, 'MAX_FRAMES_WITHOUT_DETECTION', 3)
+            tracks = [t for t in tracks if t.get('time_since_update', 0) <= max_frames_without_detection]
+            
             # 3. Para cada track, clasificar si es nuevo o actualizar bbox
             for track in tracks:
                 track_id = track['id']
@@ -296,18 +301,16 @@ class VehicleDetectionPipeline:
                         self.known_vehicles[track_id] = vehicle_data
                     
                     else:
-                        # Vehiculo existente - Re-detectar bbox cada 15 frames o si falta info
+                        # Vehiculo existente - Re-detectar bbox cada N frames o si falta info
                         vehicle_data = self.known_vehicles[track_id]
                         last_redetection = vehicle_data.get('last_redetection_frame', 0)
                         frames_since_redetection = self.frame_count - last_redetection
                         
-                        # Obtener intervalo de config
-                        redetection_interval = self.redetection_interval
-
+                        # Usar intervalo segun modo (camera/video)
                         needs_redetection = (
                             vehicle_data.get('plate_bbox') is None or
                             vehicle_data.get('brand_bbox') is None or
-                            frames_since_redetection >= redetection_interval
+                            frames_since_redetection >= self.redetection_interval
                         )
                         
                         if needs_redetection:
@@ -410,6 +413,18 @@ class VehicleDetectionPipeline:
                 # CRITICAL: Ensure bbox coords are integers
                 bbox = track['bbox']
                 bbox_int = [int(coord) for coord in bbox]
+                
+                # NUEVO: Validar que bbox este dentro de la imagen
+                h, w = frame.shape[:2]
+                x1, y1, x2, y2 = bbox_int
+                
+                # Filtrar vehiculos completamente fuera del frame
+                if x2 <= 0 or y2 <= 0 or x1 >= w or y1 >= h:
+                    continue  # Skip este track, esta fuera de vision
+                
+                # Filtrar vehiculos con bbox invalido (muy pequeno)
+                if x2 - x1 < 10 or y2 - y1 < 10:
+                    continue
                 
                 # Recuperar bbox de placa y logo del cache
                 plate_bbox = vehicle_data.get('plate_bbox', None)

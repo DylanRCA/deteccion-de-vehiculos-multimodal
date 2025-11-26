@@ -108,3 +108,7 @@ REDUCE_DB_LOGGING = True
 # OPTIMIZADO: Reduce carga de OCR y deteccion de logos
 REDETECTION_INTERVAL_CAMERA = 30  # Camara: cada 1 segundo a 30fps
 REDETECTION_INTERVAL_VIDEO = 5    # Video: cada 5 frames para precision
+
+# Frames maximos sin deteccion antes de ocultar bbox
+# OPTIMIZADO: Evita que bbox persistan cuando vehiculo sale del cuadro
+MAX_FRAMES_WITHOUT_DETECTION = 3  # Ocultar si no detectado en ultimos 3 frames
