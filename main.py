@@ -46,6 +46,9 @@ class VehicleDetectorApp:
         self.frame_counter = 0
         self.stats_update_interval = 30
         
+        # Almacenar stats por frame para reproduccion en tiempo real
+        self.video_stats_history = []
+        
         # Crear interfaz
         self._create_widgets()
         
@@ -69,12 +72,12 @@ class VehicleDetectorApp:
             )
             
             print("[APP-INIT] Pipeline cargado exitosamente\n")
-            self.status_label.configure(text="✓ Modelos cargados. Listo para usar.")
+            self.status_label.configure(text="Modelos cargados. Listo para usar.")
             
         except Exception as e:
             error_msg = traceback.format_exc()
             print(f"\n[APP-ERROR] Error completo al cargar modelos:\n{error_msg}\n")
-            self.status_label.configure(text=f"✗ Error: Ver consola para detalles")
+            self.status_label.configure(text=f"Error: Ver consola para detalles")
             messagebox.showerror("Error de Carga", 
                                f"Error al cargar modelos:\n{str(e)}\n\nRevisa la consola para mas detalles.")
     
@@ -285,7 +288,7 @@ class VehicleDetectorApp:
         self.btn_refresh_stats.pack(pady=20, padx=20)
         
         # Inicializar stats vacias
-        self._update_stats()
+        self._clear_stats()
     
     def _load_image(self):
         """
@@ -346,12 +349,18 @@ class VehicleDetectorApp:
             self.current_mode = 'video'
             self._update_stats_mode_label()
             
+            # Limpiar historial de stats
+            self.video_stats_history = []
+            
             # Reset pipeline antes de procesar nuevo video
             if self.pipeline:
                 self.pipeline.reset()
                 self.pipeline.mode = 'video'
                 self.pipeline.redetection_interval = getattr(config, 'REDETECTION_INTERVAL_VIDEO', 5)
                 print(f"[APP-VIDEO] Modo video activado - Intervalo: {self.pipeline.redetection_interval}")
+            
+            # Limpiar stats al inicio
+            self._clear_stats()
             
             print(f"[APP-VIDEO] Iniciando procesamiento de video: {file_path}")
             threading.Thread(
@@ -382,6 +391,7 @@ class VehicleDetectorApp:
             self.status_label.configure(text="Procesando video...")
             
             annotated_frames = []
+            self.video_stats_history = []  # Reset historial de stats
             frame_idx = 0
             self.progress.set(0)
             self.progress_label.configure(text="0%")
@@ -401,16 +411,26 @@ class VehicleDetectorApp:
                         result = self.pipeline.process_video_frame(frame)
                         annotated = result['annotated_image']
                         detections = result['detections']
+                        
+                        # Guardar stats de este frame para reproduccion
+                        current_stats = self.pipeline.get_video_stats().copy()
+                        self.video_stats_history.append(current_stats)
                     else:
                         print(f"[APP-WARNING] Pipeline no inicializado en frame {frame_idx}")
                         annotated = frame
                         detections = []
+                        self.video_stats_history.append({
+                            'inside': 0, 'entries': 0, 'exits': 0, 'last_entry': None
+                        })
                     
                     annotated_frames.append(annotated)
                     
                 except Exception as e:
                     print(f"[APP-ERROR] Error procesando frame {frame_idx}: {str(e)}")
                     annotated_frames.append(frame.copy())
+                    self.video_stats_history.append({
+                        'inside': 0, 'entries': 0, 'exits': 0, 'last_entry': None
+                    })
 
                 # Actualizar progreso
                 if total_frames:
@@ -422,9 +442,6 @@ class VehicleDetectorApp:
                 if frame_idx % 5 == 0 and self.pipeline:
                     try:
                         self._update_info_text(detections)
-                        # Actualizar stats de video cada 30 frames
-                        if frame_idx % 30 == 0:
-                            self._update_stats()
                     except Exception as e:
                         print(f"[APP-WARNING] Error actualizando UI: {str(e)}")
 
@@ -434,15 +451,13 @@ class VehicleDetectorApp:
             cap.release()
             
             print(f"\n[APP-VIDEO] Procesamiento completado - {frame_idx} frames procesados")
+            print(f"[APP-VIDEO] Stats history: {len(self.video_stats_history)} registros")
             
             self.progress.set(1)
             self.progress_label.configure(text="100%")
             self.status_label.configure(text="Video procesado, reproduciendo...")
-            
-            # Actualizar stats finales
-            self._update_stats()
 
-            print("[APP-VIDEO] Iniciando reproduccion...\n")
+            print("[APP-VIDEO] Iniciando reproduccion con stats en tiempo real...\n")
             self._play_processed_frames(annotated_frames, fps)
             
         except Exception as e:
@@ -461,7 +476,6 @@ class VehicleDetectorApp:
             self.current_mode = 'camera'
             self._update_stats_mode_label()
             
-            # Reset pipeline antes de iniciar camara
             # Reset pipeline Y cambiar a modo camara
             if self.pipeline:
                 self.pipeline.reset()
@@ -649,13 +663,61 @@ class VehicleDetectorApp:
         """
         Limpia el panel de estadisticas.
         """
-        self.stats_labels['inside'].configure(text="DENTRO: ---")
-        self.stats_labels['entries'].configure(text="ENTRADAS: ---")
-        self.stats_labels['exits'].configure(text="SALIDAS: ---")
+        self.stats_labels['inside'].configure(text="DENTRO: 0")
+        self.stats_labels['entries'].configure(text="ENTRADAS: 0")
+        self.stats_labels['exits'].configure(text="SALIDAS: 0")
         self.stats_labels['last_entry_plate'].configure(text="---")
         self.stats_labels['last_entry_time'].configure(text="")
         self.stats_labels['avg_duration'].configure(text="---")
-        self.stats_mode_label.configure(text="")
+    
+    def _update_stats_from_dict(self, stats):
+        """
+        Actualiza el panel de estadisticas desde un diccionario de stats.
+        
+        Args:
+            stats (dict): {'inside': int, 'entries': int, 'exits': int, 'last_entry': dict}
+        """
+        try:
+            self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
+            self.stats_labels['entries'].configure(text=f"ENTRADAS: {stats['entries']}")
+            self.stats_labels['exits'].configure(text=f"SALIDAS: {stats['exits']}")
+            
+            # Ultima entrada
+            if stats.get('last_entry'):
+                plate = stats['last_entry'].get('plate', '---')
+                entry_time = stats['last_entry'].get('timestamp')
+                
+                if entry_time:
+                    # Calcular "hace X min"
+                    now = datetime.now()
+                    diff = now - entry_time
+                    minutes_ago = int(diff.total_seconds() / 60)
+                    
+                    if minutes_ago < 1:
+                        time_str = "hace menos de 1 min"
+                    elif minutes_ago < 60:
+                        time_str = f"hace {minutes_ago} min"
+                    else:
+                        hours = minutes_ago // 60
+                        time_str = f"hace {hours}h {minutes_ago % 60}min"
+                else:
+                    time_str = ""
+                
+                # Truncar placa si es muy larga
+                if len(plate) > 20:
+                    plate = plate[:17] + "..."
+                
+                self.stats_labels['last_entry_plate'].configure(text=plate)
+                self.stats_labels['last_entry_time'].configure(text=time_str)
+            else:
+                self.stats_labels['last_entry_plate'].configure(text="---")
+                self.stats_labels['last_entry_time'].configure(text="")
+            
+            # Duracion promedio no disponible en modo video
+            self.stats_labels['avg_duration'].configure(text="N/A")
+            
+        except Exception as e:
+            print(f"[APP-WARNING] Error actualizando stats desde dict: {str(e)}")
     
     def _update_stats(self):
         """
@@ -669,41 +731,7 @@ class VehicleDetectorApp:
             # Modo VIDEO: Stats temporales en memoria
             if self.current_mode == 'video':
                 stats = self.pipeline.get_video_stats()
-                
-                self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
-                self.stats_labels['entries'].configure(text=f"ENTRADAS: {stats['entries']}")
-                self.stats_labels['exits'].configure(text=f"SALIDAS: {stats['exits']}")
-                
-                # Ultima entrada
-                if stats['last_entry']:
-                    plate = stats['last_entry']['plate']
-                    entry_time = stats['last_entry']['timestamp']
-                    
-                    # Calcular "hace X min"
-                    now = datetime.now()
-                    diff = now - entry_time
-                    minutes_ago = int(diff.total_seconds() / 60)
-                    
-                    if minutes_ago < 1:
-                        time_str = "hace menos de 1 min"
-                    elif minutes_ago < 60:
-                        time_str = f"hace {minutes_ago} min"
-                    else:
-                        hours = minutes_ago // 60
-                        time_str = f"hace {hours}h {minutes_ago % 60}min"
-                    
-                    # Truncar placa si es muy larga
-                    if len(plate) > 20:
-                        plate = plate[:17] + "..."
-                    
-                    self.stats_labels['last_entry_plate'].configure(text=plate)
-                    self.stats_labels['last_entry_time'].configure(text=time_str)
-                else:
-                    self.stats_labels['last_entry_plate'].configure(text="---")
-                    self.stats_labels['last_entry_time'].configure(text="")
-                
-                # Duracion promedio no disponible en modo video
-                self.stats_labels['avg_duration'].configure(text="N/A")
+                self._update_stats_from_dict(stats)
             
             # Modo CAMARA: Stats de BD
             elif self.current_mode == 'camera':
@@ -758,6 +786,7 @@ class VehicleDetectorApp:
     def _play_processed_frames(self, frames, fps):
         """
         Reproduce en la UI la lista de frames procesados respetando el FPS.
+        Actualiza estadisticas en tiempo real segun el frame actual.
         """
         if not frames:
             print("[APP-WARNING] Sin frames para reproducir")
@@ -767,22 +796,29 @@ class VehicleDetectorApp:
         delay_ms = int(1000 / fps) if fps and fps > 0 else 33
         
         print(f"[APP-PLAY] Reproduciendo {len(frames)} frames a {fps} FPS")
+        print(f"[APP-PLAY] Stats history disponible: {len(self.video_stats_history)} registros")
 
         def show_frame(i):
             if i >= len(frames):
                 print("[APP-PLAY] Reproduccion finalizada\n")
                 self.status_label.configure(text="Reproduccion finalizada")
-                # Actualizar stats al final
-                self._update_stats()
                 return
             
             try:
+                # Mostrar frame
                 self._display_image(frames[i])
+                
+                # Actualizar estadisticas del frame actual (tiempo real)
+                if i < len(self.video_stats_history):
+                    self._update_stats_from_dict(self.video_stats_history[i])
+                
             except Exception as e:
                 print(f"[APP-WARNING] Error mostrando frame {i}: {str(e)}")
             
             self.root.after(delay_ms, lambda: show_frame(i + 1))
 
+        # Iniciar desde stats en 0
+        self._clear_stats()
         show_frame(0)
     
     def run(self):
