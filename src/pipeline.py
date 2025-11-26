@@ -90,6 +90,14 @@ class VehicleDetectionPipeline:
         print(f"[PIPELINE-INIT] Modo: {mode}, Intervalo re-deteccion: {self.redetection_interval} frames")
         self.known_vehicles = {}  # track_id -> vehicle_info (cache)
         
+        # Estadisticas temporales para modo video
+        self._video_stats = {
+            'inside': set(),
+            'entries': 0,
+            'exits': 0,
+            'last_entry': None
+        }
+        
         print("\n" + "="*80)
         print("[PIPELINE-INIT] Pipeline inicializado correctamente")
         print(f"[PIPELINE-INIT] - Base de datos: {'ACTIVADA' if self.enable_database else 'DESACTIVADA'}")
@@ -114,11 +122,61 @@ class VehicleDetectionPipeline:
         self.frame_count = 0
         self.known_vehicles = {}
         
+        # Reset estadisticas temporales de video
+        self._video_stats = {
+            'inside': set(),
+            'entries': 0,
+            'exits': 0,
+            'last_entry': None
+        }
+        
         # Reset detector de eventos si existe
         if self.enable_events and self.event_detector:
             self.event_detector.reset_history()
         
         print("[PIPELINE-RESET] Pipeline reseteado - IDs comenzaran desde 1\n")
+    
+    def get_video_stats(self):
+        """
+        Obtiene estadisticas temporales del video en proceso.
+        Basado en eventos detectados en memoria (no BD).
+        
+        Returns:
+            dict: {
+                'inside': int,       # Vehiculos actualmente "dentro"
+                'entries': int,      # Total entradas detectadas
+                'exits': int,        # Total salidas detectadas
+                'last_entry': dict   # Ultima entrada o None
+            }
+        """
+        return {
+            'inside': len(self._video_stats['inside']),
+            'entries': self._video_stats['entries'],
+            'exits': self._video_stats['exits'],
+            'last_entry': self._video_stats['last_entry']
+        }
+    
+    def _update_video_stats(self, event, vehicle_data):
+        """
+        Actualiza estadisticas temporales de video al detectar evento.
+        
+        Args:
+            event (dict): {'track_id': int, 'event': str, 'timestamp': datetime}
+            vehicle_data (dict): Datos del vehiculo
+        """
+        track_id = event['track_id']
+        
+        if event['event'] == 'entry':
+            self._video_stats['inside'].add(track_id)
+            self._video_stats['entries'] += 1
+            self._video_stats['last_entry'] = {
+                'plate': vehicle_data.get('plate', 'DESCONOCIDA'),
+                'timestamp': event['timestamp']
+            }
+        
+        elif event['event'] == 'exit':
+            self._video_stats['inside'].discard(track_id)
+            self._video_stats['exits'] += 1
     
     def process_image(self, image):
         """
@@ -272,12 +330,6 @@ class VehicleDetectionPipeline:
                         plate_info = self.plate_recognizer.recognize_plate(vehicle_crop)
                         classification = self.vehicle_classifier.classify(vehicle_crop)
                         
-                        # DEBUG: Verificar que se detectó la placa
-                        """ print(f"[DEBUG-PLATE] Track {track_id}:")
-                        print(f"  - plate_info: {plate_info}")
-                        print(f"  - plate_bbox: {plate_info['bbox']}")
-                        print(f"  - brand_bbox: {classification['brand_bbox']}") """
-                        
                         # Generar placa final (con ID temporal si no tiene placa)
                         plate_text = plate_info['text']
                         if plate_text in ["SIN PLACA", "NO DETECTADA"]:
@@ -297,7 +349,6 @@ class VehicleDetectionPipeline:
                             'last_redetection_frame': self.frame_count
                         }
                         
-                        # print(f"[DEBUG-CACHE] Guardando en cache: {vehicle_data}")
                         self.known_vehicles[track_id] = vehicle_data
                     
                     else:
@@ -322,11 +373,11 @@ class VehicleDetectionPipeline:
                             if plate_info['bbox'] is not None:
                                 vehicle_data['plate_bbox'] = [int(x) for x in plate_info['bbox']]
                                 
-                                # NUEVO: Actualizar texto de placa si se detectó una real
+                                # NUEVO: Actualizar texto de placa si se detecto una real
                                 plate_text = plate_info['text']
                                 temp_prefix = getattr(config, 'TEMP_PLATE_PREFIX', 'TEMP_')
                                 
-                                # Si placa actual es temporal Y se detectó una real, actualizar
+                                # Si placa actual es temporal Y se detecto una real, actualizar
                                 if (vehicle_data['plate'].startswith(temp_prefix) and 
                                     plate_text not in ["SIN PLACA", "NO DETECTADA"]):
                                     vehicle_data['plate'] = plate_text
@@ -336,9 +387,6 @@ class VehicleDetectionPipeline:
                                 vehicle_data['brand_bbox'] = [int(x) for x in classification['brand_bbox']]
                             
                             vehicle_data['last_redetection_frame'] = self.frame_count
-                            
-                            #if self.frame_count % log_interval == 0:
-                                #print(f"[PIPELINE-VIDEO] Re-deteccion bbox para track {track_id}")
                 
                 except Exception as e:
                     print(f"[PIPELINE-ERROR] Error procesando track {track_id}: {str(e)}")
@@ -350,7 +398,7 @@ class VehicleDetectionPipeline:
                 try:
                     events = self.event_detector.detect_events(tracks)
                     
-                    # 5. Procesar eventos con NUEVA LOGICA BD
+                    # 5. Procesar eventos
                     for event in events:
                         track_id = event['track_id']
                         vehicle_data = self.known_vehicles.get(track_id)
@@ -363,7 +411,11 @@ class VehicleDetectionPipeline:
                         brand = vehicle_data['brand']
                         color = vehicle_data['color']
                         
-                        if self.enable_database and self.db:
+                        # SIEMPRE actualizar stats de video (independiente del modo)
+                        self._update_video_stats(event, vehicle_data)
+                        
+                        # Solo persistir en BD si estamos en modo camara
+                        if self.mode == 'camera' and self.enable_database and self.db:
                             try:
                                 if event['event'] == 'entry':
                                     # ENTRADA: Buscar en active_vehicles
@@ -394,6 +446,12 @@ class VehicleDetectionPipeline:
                                 
                             except Exception as e:
                                 print(f"[PIPELINE-ERROR] Error procesando evento {event['event']} para {plate}: {str(e)}")
+                        else:
+                            # Modo video: solo log
+                            if event['event'] == 'entry':
+                                print(f"[VIDEO-EVENT] {plate} ENTRO (stats temporales)")
+                            elif event['event'] == 'exit':
+                                print(f"[VIDEO-EVENT] {plate} SALIO (stats temporales)")
                 
                 except Exception as e:
                     print(f"[PIPELINE-ERROR] Error en detector de eventos: {str(e)}")
@@ -429,13 +487,6 @@ class VehicleDetectionPipeline:
                 # Recuperar bbox de placa y logo del cache
                 plate_bbox = vehicle_data.get('plate_bbox', None)
                 brand_bbox = vehicle_data.get('brand_bbox', None)
-                
-                # DEBUG: Verificar recuperación de bbox
-                #if self.frame_count % log_interval == 0:
-                    #print(f"[DEBUG-PREP] Track {track_id}:")
-                    #print(f"  - has_plate: {has_plate}")
-                    #print(f"  - plate_bbox: {plate_bbox}")
-                    #print(f"  - brand_bbox: {brand_bbox}")
                 
                 detection_info = {
                     'id': track_id,
