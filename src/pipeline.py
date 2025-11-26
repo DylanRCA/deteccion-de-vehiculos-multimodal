@@ -396,6 +396,11 @@ class VehicleDetectionPipeline:
             events = []
             if self.enable_events and self.event_detector:
                 try:
+                    # Debug: mostrar cuantos tracks tienen historial
+                    if self.frame_count % 30 == 0:
+                        debug_info = self.event_detector.get_debug_info()
+                        print(f"[EVENT-DEBUG] Frame {self.frame_count}: {len(tracks)} tracks activos, {debug_info['tracked_vehicles']} con historial, {debug_info['vehicles_with_events']} con eventos")
+                    
                     events = self.event_detector.detect_events(tracks)
                     
                     # 5. Procesar eventos

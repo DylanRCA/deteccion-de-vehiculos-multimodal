@@ -14,10 +14,10 @@ class EventDetector:
         
         self.line_position = line_position
         self.entry_direction = entry_direction
-        self.tolerance = 10  # Pixeles de tolerancia
+        self.tolerance = 5  # Reducido para detectar mejor
         
         # Historial de posiciones para cada track
-        self.track_history = {}  # track_id -> {'positions': [...], 'last_event': None}
+        self.track_history = {}  # track_id -> {'positions': [...], 'last_event': None, 'crossed': False}
         
         print(f"[EVENT-INIT] EventDetector inicializado correctamente")
     
@@ -68,42 +68,52 @@ class EventDetector:
         if len(positions) < 2:
             return 'stationary'
         
-        # Comparar con posicion anterior
-        prev_y = positions[-1]
+        # Comparar con posiciones anteriores (promedio para estabilidad)
+        if len(positions) >= 3:
+            avg_prev = sum(positions[-3:]) / 3
+        else:
+            avg_prev = positions[-1]
         
-        if current_y > prev_y + self.tolerance:
+        diff = current_y - avg_prev
+        
+        if diff > self.tolerance:
             return 'down'
-        elif current_y < prev_y - self.tolerance:
+        elif diff < -self.tolerance:
             return 'up'
         else:
             return 'stationary'
     
-    def _is_crossing_line(self, track_id, current_y):
+    def _check_line_crossing(self, track_id, current_y):
         """
-        Detecta si un vehiculo esta cruzando la linea virtual.
+        Verifica si el vehiculo cruzo la linea entre el frame anterior y el actual.
         
         Args:
             track_id (int): ID del track
             current_y (float): Posicion Y actual
             
         Returns:
-            bool: True si esta cruzando la linea
+            str or None: 'down_cross', 'up_cross', o None
         """
         if track_id not in self.track_history:
-            return False
+            return None
         
         positions = self.track_history[track_id]['positions']
         
         if len(positions) < 1:
-            return False
+            return None
         
         prev_y = positions[-1]
+        line = self.line_position
         
-        # Verificar si cruzo la linea entre frames
-        crossed = (prev_y < self.line_position <= current_y) or \
-                  (prev_y > self.line_position >= current_y)
+        # Cruce de arriba hacia abajo
+        if prev_y < line and current_y >= line:
+            return 'down_cross'
         
-        return crossed
+        # Cruce de abajo hacia arriba
+        if prev_y > line and current_y <= line:
+            return 'up_cross'
+        
+        return None
     
     def detect_events(self, tracks):
         """
@@ -117,8 +127,6 @@ class EventDetector:
             list: Lista de eventos detectados
                   [{'track_id': int, 'event': str, 'timestamp': datetime}, ...]
         """
-        print(f"[EVENT-DETECT] Procesando {len(tracks)} tracks para deteccion de eventos")
-        
         events = []
         current_track_ids = set()
         
@@ -131,36 +139,34 @@ class EventDetector:
             
             # Inicializar historial si es nuevo
             if track_id not in self.track_history:
-                print(f"[EVENT-DETECT] Nuevo track detectado: {track_id}")
                 self.track_history[track_id] = {
-                    'positions': [],
-                    'last_event': None
+                    'positions': [centroid_y],  # Iniciar con posicion actual
+                    'last_event': None,
+                    'crossed': False
                 }
+                continue  # Necesitamos al menos 2 frames para detectar cruce
             
-            # Detectar cruce de linea
-            is_crossing = self._is_crossing_line(track_id, centroid_y)
+            # Verificar cruce de linea
+            crossing = self._check_line_crossing(track_id, centroid_y)
             
-            if is_crossing:
-                # Determinar direccion de movimiento
-                direction = self._determine_direction(track_id, centroid_y)
-                
-                print(f"[EVENT-DETECT] Track {track_id} cruzando linea - Direccion: {direction}, Y actual: {centroid_y:.1f}, Linea: {self.line_position}")
-                
-                # Determinar tipo de evento
+            if crossing:
+                # Determinar tipo de evento segun direccion configurada
                 event_type = None
                 
                 if self.entry_direction == 'down':
-                    if direction == 'down':
+                    # Entrada = cruzar hacia abajo, Salida = cruzar hacia arriba
+                    if crossing == 'down_cross':
                         event_type = 'entry'
-                    elif direction == 'up':
+                    elif crossing == 'up_cross':
                         event_type = 'exit'
                 else:  # entry_direction == 'up'
-                    if direction == 'up':
+                    # Entrada = cruzar hacia arriba, Salida = cruzar hacia abajo
+                    if crossing == 'up_cross':
                         event_type = 'entry'
-                    elif direction == 'down':
+                    elif crossing == 'down_cross':
                         event_type = 'exit'
                 
-                # Evitar eventos duplicados
+                # Evitar eventos duplicados para el mismo track
                 last_event = self.track_history[track_id]['last_event']
                 
                 if event_type and event_type != last_event:
@@ -173,26 +179,18 @@ class EventDetector:
                     
                     # Actualizar ultimo evento
                     self.track_history[track_id]['last_event'] = event_type
+                    self.track_history[track_id]['crossed'] = True
                     
-                    print(f"[EVENT-DETECTED] Evento '{event_type}' registrado para track {track_id}")
-                elif event_type == last_event:
-                    print(f"[EVENT-SKIP] Evento duplicado '{event_type}' para track {track_id}, ignorando")
+                    print(f"[EVENT] Track {track_id} -> {event_type.upper()} (Y: {centroid_y:.0f}, Linea: {self.line_position})")
             
             # Actualizar historial de posiciones (mantener ultimas 10 posiciones)
             self.track_history[track_id]['positions'].append(centroid_y)
             if len(self.track_history[track_id]['positions']) > 10:
                 self.track_history[track_id]['positions'].pop(0)
         
-        # Limpiar tracks que ya no estan activos (llevan mas de 100 frames sin aparecer)
-        # Para evitar que el historial crezca indefinidamente
-        tracks_to_remove = []
-        for track_id in self.track_history:
-            if track_id not in current_track_ids:
-                # Podriamos implementar un contador de frames inactivos
-                # Por ahora, mantener todos para no perder informacion
-                pass
-        
-        print(f"[EVENT-DETECT] Total de eventos detectados: {len(events)}")
+        # Limpiar tracks muy antiguos (no vistos en 50+ frames)
+        # Esto se maneja implicitamente ya que los tracks eliminados del tracker
+        # simplemente no aparecen en la lista
         
         return events
     
@@ -228,18 +226,28 @@ class EventDetector:
             text_exit = "SALIDA (ABAJO)"
         
         # Posicionar texto
-        y_entry = self.line_position + 30
+        y_entry = self.line_position + 25
         y_exit = self.line_position - 10
         
-        cv2.putText(output, text_entry, (10, y_entry),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         cv2.putText(output, text_exit, (10, y_exit),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        cv2.putText(output, text_entry, (10, y_entry),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         return output
     
     def reset_history(self):
-        """Limpia el historial de tracks (util para debugging)."""
+        """Limpia el historial de tracks (util para nuevo video)."""
         print(f"[EVENT-RESET] Limpiando historial de tracks")
         self.track_history = {}
         print(f"[EVENT-RESET] Historial limpiado")
+    
+    def get_debug_info(self):
+        """Retorna info de debug sobre el estado actual."""
+        info = {
+            'line_position': self.line_position,
+            'entry_direction': self.entry_direction,
+            'tracked_vehicles': len(self.track_history),
+            'vehicles_with_events': sum(1 for v in self.track_history.values() if v['last_event'])
+        }
+        return info

@@ -51,7 +51,8 @@ PARKING_WARN_DUPLICATE_ENTRY = True  # Advertir si vehiculo entra estando dentro
 # Configuracion de deteccion de entrada/salida
 
 # Posicion Y de la linea virtual (pixeles desde arriba)
-EVENT_LINE_POSITION = 200
+# AJUSTAR segun tu video - debe estar donde los vehiculos crucen
+EVENT_LINE_POSITION = 230  # Ajustado para tu video
 
 # Direccion de entrada: 'down' (hacia abajo) o 'up' (hacia arriba)
 EVENT_ENTRY_DIRECTION = 'down'
