@@ -49,6 +49,10 @@ class VehicleDetectorApp:
         # Almacenar stats por frame para reproduccion en tiempo real
         self.video_stats_history = []
         
+        # Almacenar frames procesados para replay
+        self.processed_frames = []
+        self.video_fps = 30.0
+        
         # Crear interfaz
         self._create_widgets()
         
@@ -135,6 +139,17 @@ class VehicleDetectorApp:
             fg_color="green"
         )
         self.btn_process.pack(pady=10, padx=20, fill="x")
+        
+        # Boton para reproducir video procesado nuevamente
+        self.btn_replay = ctk.CTkButton(
+            control_frame,
+            text="Reproducir Video",
+            command=self._replay_video,
+            height=40,
+            fg_color="#FF9800",
+            state="disabled"
+        )
+        self.btn_replay.pack(pady=10, padx=20, fill="x")
         
         # Separador
         separator = ctk.CTkFrame(control_frame, height=2)
@@ -349,8 +364,10 @@ class VehicleDetectorApp:
             self.current_mode = 'video'
             self._update_stats_mode_label()
             
-            # Limpiar historial de stats
+            # Limpiar datos de video anterior
+            self.processed_frames = []
             self.video_stats_history = []
+            self.btn_replay.configure(state="disabled")
             
             # Reset pipeline antes de procesar nuevo video
             if self.pipeline:
@@ -452,6 +469,13 @@ class VehicleDetectorApp:
             
             print(f"\n[APP-VIDEO] Procesamiento completado - {frame_idx} frames procesados")
             print(f"[APP-VIDEO] Stats history: {len(self.video_stats_history)} registros")
+            
+            # Guardar frames procesados para replay
+            self.processed_frames = annotated_frames
+            self.video_fps = fps
+            
+            # Habilitar boton de replay
+            self.btn_replay.configure(state="normal")
             
             self.progress.set(1)
             self.progress_label.configure(text="100%")
@@ -820,6 +844,21 @@ class VehicleDetectorApp:
         # Iniciar desde stats en 0
         self._clear_stats()
         show_frame(0)
+    
+    def _replay_video(self):
+        """
+        Reproduce nuevamente el video procesado con sus estadisticas.
+        """
+        if not self.processed_frames:
+            messagebox.showinfo("Info", "No hay video procesado para reproducir")
+            return
+        
+        print(f"\n[APP-REPLAY] Reproduciendo video guardado ({len(self.processed_frames)} frames)")
+        self.status_label.configure(text="Reproduciendo video...")
+        
+        # Limpiar stats y reproducir desde el inicio
+        self._clear_stats()
+        self._play_processed_frames(self.processed_frames, self.video_fps)
     
     def run(self):
         """
