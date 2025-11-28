@@ -92,7 +92,7 @@ class VehicleDetectionPipeline:
         
         # Estadisticas temporales para modo video
         self._video_stats = {
-            'inside': set(),
+            'inside': 0,  # Contador de vehiculos dentro
             'entries': 0,
             'exits': 0,
             'last_entry': None
@@ -124,7 +124,7 @@ class VehicleDetectionPipeline:
         
         # Reset estadisticas temporales de video
         self._video_stats = {
-            'inside': set(),
+            'inside': 0,  # Contador de vehiculos dentro
             'entries': 0,
             'exits': 0,
             'last_entry': None
@@ -150,7 +150,7 @@ class VehicleDetectionPipeline:
             }
         """
         return {
-            'inside': len(self._video_stats['inside']),
+            'inside': self._video_stats['inside'],
             'entries': self._video_stats['entries'],
             'exits': self._video_stats['exits'],
             'last_entry': self._video_stats['last_entry']
@@ -164,10 +164,8 @@ class VehicleDetectionPipeline:
             event (dict): {'track_id': int, 'event': str, 'timestamp': datetime}
             vehicle_data (dict): Datos del vehiculo
         """
-        track_id = event['track_id']
-        
         if event['event'] == 'entry':
-            self._video_stats['inside'].add(track_id)
+            self._video_stats['inside'] += 1
             self._video_stats['entries'] += 1
             self._video_stats['last_entry'] = {
                 'plate': vehicle_data.get('plate', 'DESCONOCIDA'),
@@ -175,7 +173,9 @@ class VehicleDetectionPipeline:
             }
         
         elif event['event'] == 'exit':
-            self._video_stats['inside'].discard(track_id)
+            # No permitir valores negativos
+            if self._video_stats['inside'] > 0:
+                self._video_stats['inside'] -= 1
             self._video_stats['exits'] += 1
     
     def process_image(self, image):
