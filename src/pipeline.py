@@ -95,7 +95,8 @@ class VehicleDetectionPipeline:
             'inside': 0,  # Contador de vehiculos dentro
             'entries': 0,
             'exits': 0,
-            'last_entry': None
+            'last_entry': None,
+            'last_exit': None
         }
         
         print("\n" + "="*80)
@@ -127,7 +128,8 @@ class VehicleDetectionPipeline:
             'inside': 0,  # Contador de vehiculos dentro
             'entries': 0,
             'exits': 0,
-            'last_entry': None
+            'last_entry': None,
+            'last_exit': None
         }
         
         # Reset detector de eventos si existe
@@ -146,14 +148,16 @@ class VehicleDetectionPipeline:
                 'inside': int,       # Vehiculos actualmente "dentro"
                 'entries': int,      # Total entradas detectadas
                 'exits': int,        # Total salidas detectadas
-                'last_entry': dict   # Ultima entrada o None
+                'last_entry': dict,  # Ultima entrada o None
+                'last_exit': dict    # Ultima salida o None
             }
         """
         return {
             'inside': self._video_stats['inside'],
             'entries': self._video_stats['entries'],
             'exits': self._video_stats['exits'],
-            'last_entry': self._video_stats['last_entry']
+            'last_entry': self._video_stats['last_entry'],
+            'last_exit': self._video_stats['last_exit']
         }
     
     def _update_video_stats(self, event, vehicle_data):
@@ -177,6 +181,10 @@ class VehicleDetectionPipeline:
             if self._video_stats['inside'] > 0:
                 self._video_stats['inside'] -= 1
             self._video_stats['exits'] += 1
+            self._video_stats['last_exit'] = {
+                'plate': vehicle_data.get('plate', 'DESCONOCIDA'),
+                'timestamp': event['timestamp']
+            }
     
     def process_image(self, image):
         """

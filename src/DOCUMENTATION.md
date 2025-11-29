@@ -1,8 +1,8 @@
 # src/ - Codigo Fuente del Sistema
 
-## Modulos Principales
+## Modulos
 
-### `car_detector.py`
+### car_detector.py
 Detector de vehiculos usando YOLOv8.
 
 **API**:
@@ -10,13 +10,11 @@ Detector de vehiculos usando YOLOv8.
 detect_vehicles(image) -> [{'bbox': [x1,y1,x2,y2], 'confidence': float, 'class': str}]
 ```
 
-**Configuracion**:
-- Umbral: `min_confidence=0.4` (linea 7)
-- Clases: car, motorcycle, bus, truck
+**Configuracion**: `CAR_MIN_CONFIDENCE = 0.5`
 
 ---
 
-### `plate_recognizer.py`
+### plate_recognizer.py
 Reconocimiento de placas (deteccion + OCR).
 
 **API**:
@@ -25,18 +23,13 @@ recognize_plate(vehicle_image) -> {'text': str, 'bbox': [x1,y1,x2,y2]|None}
 ```
 
 **Estrategia**:
-1. YOLO (si disponible)
-2. Heuristica de contornos (fallback)
-3. OCR con 4 tecnicas
-
-**Configuracion**:
-- Umbral OCR: `min_confidence=0.2` (linea 23)
-- Umbral YOLO: `0.25` (linea 66)
-- Longitud: 4-12 caracteres
+1. YOLO para detectar region de placa
+2. OCR con 4 tecnicas de binarizacion
+3. Validacion de formato
 
 ---
 
-### `classifier.py`
+### classifier.py
 Clasificacion de marca y color.
 
 **API**:
@@ -44,15 +37,12 @@ Clasificacion de marca y color.
 classify(vehicle_image) -> {'brand': str, 'brand_bbox': [...]|None, 'color': str}
 ```
 
-**Marca**: YOLO para logos (14 marcas), umbral 0.3
+**Marca**: YOLO para logos (14 marcas)
 **Color**: Heuristica HSV (7 colores)
-
-**Configuracion**:
-- Umbral logo: `0.3` (linea 126)
 
 ---
 
-### `tracker.py`
+### tracker.py
 Sistema de tracking ByteTrack.
 
 **API**:
@@ -60,120 +50,100 @@ Sistema de tracking ByteTrack.
 update(detections) -> [{'id': int, 'bbox': [...], 'hits': int, 'age': int, ...}]
 ```
 
-**Algoritmo**:
-1. Calcular matriz IoU
-2. Asociar con algoritmo hungaro
-3. Actualizar tracks matched
-4. Crear nuevos tracks
-5. Eliminar antiguos (age > max_age)
-
-**Configuracion**:
-- `max_age = 30` - Frames sin deteccion
-- `min_hits = 3` - Detecciones para confirmar
-- `iou_threshold = 0.3` - Umbral matching
+**Parametros**:
+- `max_age = 45` - Frames sin deteccion
+- `min_hits = 5` - Detecciones para confirmar
+- `iou_threshold = 0.25` - Umbral matching
 
 ---
 
-### `pipeline.py`
+### database.py
+Gestor de base de datos SQLite.
+
+**Tablas**:
+- `active_vehicles` - Vehiculos dentro ahora
+- `parking_history` - Sesiones completadas
+- `vehicle_registry` - Catalogo de vehiculos
+
+**API Principal**:
+```python
+register_entry(plate, track_id, brand, color) -> int
+register_exit(plate) -> dict
+get_active_vehicles() -> list
+get_today_stats() -> dict  # inside, entries, exits, last_entry, last_exit
+```
+
+---
+
+### event_detector.py
+Detector de eventos entrada/salida.
+
+**API**:
+```python
+configure_line(y_position, entry_direction)
+detect_events(tracks) -> [{'track_id': int, 'event': str, 'timestamp': datetime}]
+draw_line(image) -> image
+reset_history()
+```
+
+**Algoritmo**: Detecta cruces de linea virtual usando historial de centroides.
+
+---
+
+### pipeline.py
 Orquestador principal.
 
-**Flujo**:
+**Modos**:
+- `video`: Stats temporales en memoria
+- `camera`: Stats en BD
+
+**API**:
 ```python
-1. car_detector.detect_vehicles()
-2. tracker.update(detections)
-3. Para cada track nuevo:
-   - plate_recognizer.recognize_plate()
-   - classifier.classify()
-   - Guardar en cache
-4. Dibujar resultados
+__init__(car_min_confidence, enable_database, enable_events, mode)
+reset()
+process_image(image) -> dict
+process_video_frame(frame) -> dict
+get_video_stats() -> dict  # inside, entries, exits, last_entry, last_exit
 ```
 
-**Optimizacion**: Cache de vehiculos conocidos (`known_vehicles`) evita re-clasificacion.
-
-**Colores**:
-- Verde: Vehiculo
-- Amarillo: Placa
-- Azul: Logo
-
----
-
-## Dependencias entre Modulos
-
-```
-pipeline.py
-├── car_detector.py
-├── tracker.py
-├── plate_recognizer.py
-└── classifier.py
-```
-
----
-
-## Umbrales Configurables
-
-| Modulo | Parametro | Valor | Ubicacion |
-|--------|-----------|-------|-----------|
-| car_detector | min_confidence | 0.4 | linea 7 |
-| plate_recognizer | min_confidence | 0.2 | linea 23 |
-| classifier | logo threshold | 0.3 | linea 126 |
-| tracker | max_age | 30 | config.py |
-| tracker | min_hits | 3 | config.py |
-| tracker | iou_threshold | 0.3 | config.py |
-
----
-
-## Coordenadas
-
-- **Absolutas**: Respecto a imagen completa
-- **Relativas**: Respecto a crop del vehiculo
-
-**Conversion**:
+**Stats de video (_video_stats)**:
 ```python
-abs_x = vehicle_x1 + relative_x
-abs_y = vehicle_y1 + relative_y
-```
-
----
-
-## Performance por Modulo
-
-| Modulo | Tiempo |
-|--------|--------|
-| car_detector | ~100ms |
-| tracker | ~15ms |
-| plate_recognizer | ~300ms |
-| classifier | ~60ms |
-| **Total sin tracking** | ~500ms/frame |
-| **Total con tracking** | ~50ms/frame |
-
----
-
-## Modificaciones Comunes
-
-### Cambiar umbral vehiculos
-```python
-# car_detector.py linea 7
-def __init__(self, model_path=None, min_confidence=0.5):
-```
-
-### Cambiar umbral placas
-```python
-# plate_recognizer.py linea 23
-self.min_confidence = 0.3
-```
-
-### Ajustar tracking
-```python
-# config.py
-TRACKING_IOU_THRESHOLD = 0.25  # Mas permisivo
-TRACKING_MAX_AGE = 45          # Mayor tolerancia
-```
-
-### Agregar color
-```python
-# classifier.py linea 49
-self.colors = {
-    'NARANJA': ([10, 100, 100], [20, 255, 255]),
-    # ...
+{
+    'inside': int,       # Contador (no set)
+    'entries': int,
+    'exits': int,
+    'last_entry': dict,  # {plate, timestamp}
+    'last_exit': dict    # {plate, timestamp}
 }
 ```
+
+---
+
+## Flujo de Datos
+
+```
+CarDetector.detect_vehicles()
+    |
+VehicleTracker.update()
+    |
+PlateRecognizer + VehicleClassifier (solo nuevos)
+    |
+EventDetector.detect_events()
+    |
+Pipeline._update_video_stats() o DatabaseManager
+    |
+Pipeline._draw_results()
+```
+
+---
+
+## Configuracion (config.py)
+
+| Parametro | Valor | Descripcion |
+|-----------|-------|-------------|
+| TRACKING_MAX_AGE | 45 | Frames sin deteccion |
+| TRACKING_MIN_HITS | 5 | Detecciones para confirmar |
+| TRACKING_IOU_THRESHOLD | 0.25 | Umbral matching |
+| CAR_MIN_CONFIDENCE | 0.5 | Confianza minima |
+| EVENT_LINE_POSITION | 230 | Posicion Y linea |
+| EVENT_ENTRY_DIRECTION | 'down' | Direccion entrada |
