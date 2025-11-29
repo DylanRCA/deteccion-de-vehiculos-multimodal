@@ -275,6 +275,28 @@ class VehicleDetectorApp:
         )
         self.stats_labels['last_entry_time'].pack(pady=2, padx=20, anchor="w")
         
+        # ULTIMA SALIDA
+        ctk.CTkLabel(
+            stats_frame,
+            text="ULTIMA SALIDA:",
+            font=("Arial", 12, "bold")
+        ).pack(pady=(10, 5), padx=20, anchor="w")
+        
+        self.stats_labels['last_exit_plate'] = ctk.CTkLabel(
+            stats_frame,
+            text="---",
+            font=("Arial", 11)
+        )
+        self.stats_labels['last_exit_plate'].pack(pady=2, padx=20, anchor="w")
+        
+        self.stats_labels['last_exit_time'] = ctk.CTkLabel(
+            stats_frame,
+            text="",
+            font=("Arial", 10),
+            text_color="gray"
+        )
+        self.stats_labels['last_exit_time'].pack(pady=2, padx=20, anchor="w")
+        
         # Separador
         ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=15)
         
@@ -692,6 +714,8 @@ class VehicleDetectorApp:
         self.stats_labels['exits'].configure(text="SALIDAS: 0")
         self.stats_labels['last_entry_plate'].configure(text="---")
         self.stats_labels['last_entry_time'].configure(text="")
+        self.stats_labels['last_exit_plate'].configure(text="---")
+        self.stats_labels['last_exit_time'].configure(text="")
         self.stats_labels['avg_duration'].configure(text="---")
     
     def _update_stats_from_dict(self, stats):
@@ -699,7 +723,7 @@ class VehicleDetectorApp:
         Actualiza el panel de estadisticas desde un diccionario de stats.
         
         Args:
-            stats (dict): {'inside': int, 'entries': int, 'exits': int, 'last_entry': dict}
+            stats (dict): {'inside': int, 'entries': int, 'exits': int, 'last_entry': dict, 'last_exit': dict}
         """
         try:
             self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
@@ -736,6 +760,37 @@ class VehicleDetectorApp:
             else:
                 self.stats_labels['last_entry_plate'].configure(text="---")
                 self.stats_labels['last_entry_time'].configure(text="")
+            
+            # Ultima salida
+            if stats.get('last_exit'):
+                plate = stats['last_exit'].get('plate', '---')
+                exit_time = stats['last_exit'].get('timestamp')
+                
+                if exit_time:
+                    # Calcular "hace X min"
+                    now = datetime.now()
+                    diff = now - exit_time
+                    minutes_ago = int(diff.total_seconds() / 60)
+                    
+                    if minutes_ago < 1:
+                        time_str = "hace menos de 1 min"
+                    elif minutes_ago < 60:
+                        time_str = f"hace {minutes_ago} min"
+                    else:
+                        hours = minutes_ago // 60
+                        time_str = f"hace {hours}h {minutes_ago % 60}min"
+                else:
+                    time_str = ""
+                
+                # Truncar placa si es muy larga
+                if len(plate) > 20:
+                    plate = plate[:17] + "..."
+                
+                self.stats_labels['last_exit_plate'].configure(text=plate)
+                self.stats_labels['last_exit_time'].configure(text=time_str)
+            else:
+                self.stats_labels['last_exit_plate'].configure(text="---")
+                self.stats_labels['last_exit_time'].configure(text="")
             
             # Duracion promedio no disponible en modo video
             self.stats_labels['avg_duration'].configure(text="N/A")
@@ -796,6 +851,34 @@ class VehicleDetectorApp:
                 else:
                     self.stats_labels['last_entry_plate'].configure(text="---")
                     self.stats_labels['last_entry_time'].configure(text="")
+                
+                # Ultima salida
+                if stats.get('last_exit'):
+                    plate = stats['last_exit']['plate']
+                    exit_time = datetime.fromisoformat(stats['last_exit']['exit_time'])
+                    
+                    # Calcular "hace X min"
+                    now = datetime.now()
+                    diff = now - exit_time
+                    minutes_ago = int(diff.total_seconds() / 60)
+                    
+                    if minutes_ago < 1:
+                        time_str = "hace menos de 1 min"
+                    elif minutes_ago < 60:
+                        time_str = f"hace {minutes_ago} min"
+                    else:
+                        hours = minutes_ago // 60
+                        time_str = f"hace {hours}h {minutes_ago % 60}min"
+                    
+                    # Truncar placa si es muy larga
+                    if len(plate) > 20:
+                        plate = plate[:17] + "..."
+                    
+                    self.stats_labels['last_exit_plate'].configure(text=plate)
+                    self.stats_labels['last_exit_time'].configure(text=time_str)
+                else:
+                    self.stats_labels['last_exit_plate'].configure(text="---")
+                    self.stats_labels['last_exit_time'].configure(text="")
                 
                 # Duracion promedio
                 self.stats_labels['avg_duration'].configure(text=f"{stats['avg_duration']} min")

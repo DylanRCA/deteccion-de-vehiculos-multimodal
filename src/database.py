@@ -485,7 +485,8 @@ class DatabaseManager:
                 'entries_today': int,       # Entradas del dia
                 'exits_today': int,         # Salidas del dia
                 'avg_duration': int,        # Duracion promedio (minutos)
-                'last_entry': dict or None  # Ultima entrada
+                'last_entry': dict or None, # Ultima entrada
+                'last_exit': dict or None   # Ultima salida
             }
         """
         try:
@@ -496,29 +497,37 @@ class DatabaseManager:
                 cursor.execute('SELECT COUNT(*) FROM active_vehicles')
                 inside = cursor.fetchone()[0]
                 
-                # Entradas del dia (desde parking_history)
+                # Entradas del dia: vehiculos activos que entraron hoy + los que ya salieron hoy
+                cursor.execute('''
+                    SELECT COUNT(*) FROM active_vehicles
+                    WHERE DATE(entry_time) = DATE('now', 'localtime')
+                ''')
+                active_entries_today = cursor.fetchone()[0]
+                
                 cursor.execute('''
                     SELECT COUNT(*) FROM parking_history
-                    WHERE DATE(entry_time) = DATE('now')
+                    WHERE DATE(entry_time) = DATE('now', 'localtime')
                 ''')
-                entries_today = cursor.fetchone()[0]
+                history_entries_today = cursor.fetchone()[0]
+                
+                entries_today = active_entries_today + history_entries_today
                 
                 # Salidas del dia
                 cursor.execute('''
                     SELECT COUNT(*) FROM parking_history
-                    WHERE DATE(exit_time) = DATE('now')
+                    WHERE DATE(exit_time) = DATE('now', 'localtime')
                 ''')
                 exits_today = cursor.fetchone()[0]
                 
-                # Duracion promedio del dia
+                # Duracion promedio del dia (solo de los que ya salieron)
                 cursor.execute('''
                     SELECT AVG(duration_minutes) FROM parking_history
-                    WHERE DATE(entry_time) = DATE('now')
+                    WHERE DATE(exit_time) = DATE('now', 'localtime')
                 ''')
                 avg_duration = cursor.fetchone()[0]
                 avg_duration = int(avg_duration) if avg_duration else 0
                 
-                # Ultima entrada (de active_vehicles)
+                # Ultima entrada (de active_vehicles, la mas reciente)
                 cursor.execute('''
                     SELECT * FROM active_vehicles
                     ORDER BY entry_time DESC
@@ -527,12 +536,23 @@ class DatabaseManager:
                 last_entry_row = cursor.fetchone()
                 last_entry = dict(last_entry_row) if last_entry_row else None
                 
+                # Ultima salida (de parking_history del dia)
+                cursor.execute('''
+                    SELECT * FROM parking_history
+                    WHERE DATE(exit_time) = DATE('now', 'localtime')
+                    ORDER BY exit_time DESC
+                    LIMIT 1
+                ''')
+                last_exit_row = cursor.fetchone()
+                last_exit = dict(last_exit_row) if last_exit_row else None
+                
                 return {
                     'inside': inside,
                     'entries_today': entries_today,
                     'exits_today': exits_today,
                     'avg_duration': avg_duration,
-                    'last_entry': last_entry
+                    'last_entry': last_entry,
+                    'last_exit': last_exit
                 }
                 
         except Exception as e:
@@ -542,5 +562,6 @@ class DatabaseManager:
                 'entries_today': 0,
                 'exits_today': 0,
                 'avg_duration': 0,
-                'last_entry': None
+                'last_entry': None,
+                'last_exit': None
             }
