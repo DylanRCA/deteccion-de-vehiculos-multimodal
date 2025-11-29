@@ -49,20 +49,27 @@ class VehicleClassifier:
             13: 'Volkswagen'
         }
         
-        # Colores detectables por heuristica HSV
+        # Paleta de colores expandida (12 colores comunes en vehiculos)
+        # Rangos HSV para metodo fallback (si K-Means falla)
         self.colors = {
             'BLANCO': ([0, 0, 200], [180, 30, 255]),
             'NEGRO': ([0, 0, 0], [180, 255, 50]),
             'GRIS': ([0, 0, 50], [180, 50, 200]),
+            'PLATA': ([0, 0, 150], [180, 30, 200]),
             'ROJO': ([0, 100, 100], [10, 255, 255]),
+            'ROJO_OSCURO': ([170, 100, 50], [180, 255, 150]),
             'AZUL': ([100, 100, 100], [130, 255, 255]),
+            'AZUL_OSCURO': ([100, 100, 50], [130, 255, 150]),
             'VERDE': ([40, 100, 100], [80, 255, 255]),
             'AMARILLO': ([20, 100, 100], [30, 255, 255]),
+            'NARANJA': ([10, 100, 100], [20, 255, 255]),
+            'CAFE': ([10, 100, 20], [20, 255, 100]),
         }
     
     def _detect_dominant_color(self, vehicle_image):
         """
-        Detecta el color dominante usando heuristica HSV.
+        Detecta el color dominante usando ROI + K-Means optimizado.
+        OPCION 2: Balance entre precision y rendimiento.
         
         Args:
             vehicle_image: Imagen del vehiculo en BGR
@@ -70,26 +77,125 @@ class VehicleClassifier:
         Returns:
             str: Nombre del color detectado
         """
-        # Convertir a HSV para mejor deteccion de color
+        h, w = vehicle_image.shape[:2]
+        
+        # ROI: zona central (30-70% vertical, 20-80% horizontal)
+        # Esto evita neumaticos, ventanas, sombras y elementos no representativos
+        roi = vehicle_image[int(h*0.3):int(h*0.7), int(w*0.2):int(w*0.8)]
+        
+        # Validar ROI
+        if roi.size == 0 or roi.shape[0] < 10 or roi.shape[1] < 10:
+            print("[DEBUG-COLOR] ROI invalido, usando metodo fallback")
+            return self._detect_color_fallback(vehicle_image)
+        
+        # Downsampling agresivo para rendimiento (60x60)
+        roi_small = cv2.resize(roi, (60, 60))
+        
+        try:
+            # K-Means con K=3 (rapido)
+            pixels = roi_small.reshape((-1, 3)).astype(np.float32)
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+            _, labels, centers = cv2.kmeans(pixels, 3, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+            
+            # Cluster dominante (el que tiene mas pixeles)
+            unique, counts = np.unique(labels, return_counts=True)
+            dominant_cluster = unique[np.argmax(counts)]
+            dominant_bgr = centers[dominant_cluster].astype(int)
+            
+            # Mapear BGR a nombre de color
+            color_name = self._bgr_to_color_name(dominant_bgr)
+            
+            return color_name
+            
+        except Exception as e:
+            print(f"[DEBUG-COLOR] Error en K-Means: {str(e)}, usando fallback")
+            return self._detect_color_fallback(vehicle_image)
+    
+    def _bgr_to_color_name(self, bgr):
+        """
+        Mapea BGR a nombre de color usando clasificacion mejorada.
+        Soporta 12 colores comunes en vehiculos.
+        
+        Args:
+            bgr: Array numpy [B, G, R]
+            
+        Returns:
+            str: Nombre del color
+        """
+        # Convertir BGR a HSV para clasificacion
+        hsv_pixel = cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2HSV)[0][0]
+        h, s, v = hsv_pixel
+        
+        # Clasificacion por brillo y saturacion primero
+        if v < 40:
+            return 'NEGRO'
+        elif s < 20:
+            # Colores acromaticos (blanco/gris/plata)
+            if v > 200:
+                return 'BLANCO'
+            elif v > 140:
+                return 'PLATA'
+            else:
+                return 'GRIS'
+        
+        # Clasificacion por tono (H) para colores saturados
+        # Rojo (wrap around en HSV: 0-10 y 170-180)
+        if 0 <= h <= 10 or 170 <= h <= 180:
+            return 'ROJO' if v > 100 else 'ROJO_OSCURO'
+        
+        # Naranja/Cafe
+        elif 10 < h <= 20:
+            return 'NARANJA' if s > 100 else 'CAFE'
+        
+        # Amarillo
+        elif 20 < h <= 35:
+            return 'AMARILLO'
+        
+        # Verde
+        elif 35 < h <= 85:
+            return 'VERDE'
+        
+        # Azul
+        elif 85 < h <= 135:
+            return 'AZUL' if v > 100 else 'AZUL_OSCURO'
+        
+        # Si no cae en ninguna categoria
+        return 'DESCONOCIDO'
+    
+    def _detect_color_fallback(self, vehicle_image):
+        """
+        Metodo fallback usando heuristica HSV tradicional.
+        Usado si K-Means falla o ROI es invalido.
+        
+        Args:
+            vehicle_image: Imagen del vehiculo en BGR
+            
+        Returns:
+            str: Nombre del color detectado
+        """
+        # Convertir a HSV
         hsv = cv2.cvtColor(vehicle_image, cv2.COLOR_BGR2HSV)
         
         # Redimensionar para acelerar procesamiento
         hsv_small = cv2.resize(hsv, (100, 100))
         
-        color_counts = {}
+        color_percentages = {}
         
         for color_name, (lower, upper) in self.colors.items():
             lower_bound = np.array(lower, dtype=np.uint8)
             upper_bound = np.array(upper, dtype=np.uint8)
             
             mask = cv2.inRange(hsv_small, lower_bound, upper_bound)
-            count = cv2.countNonZero(mask)
-            color_counts[color_name] = count
+            
+            # Usar porcentaje en lugar de conteo absoluto
+            percentage = (cv2.countNonZero(mask) / mask.size) * 100
+            color_percentages[color_name] = percentage
         
-        if not color_counts or max(color_counts.values()) < 100:
+        # Si ningun color supera 15%, retornar DESCONOCIDO
+        if not color_percentages or max(color_percentages.values()) < 15:
             return 'DESCONOCIDO'
         
-        dominant_color = max(color_counts, key=color_counts.get)
+        dominant_color = max(color_percentages, key=color_percentages.get)
         return dominant_color
     
     def classify_brand(self, vehicle_image):
@@ -160,7 +266,7 @@ class VehicleClassifier:
     def classify_color(self, vehicle_image):
         """
         Clasifica el color del vehiculo.
-        Usa heuristica HSV basica.
+        Usa K-Means optimizado con ROI.
         
         Args:
             vehicle_image: Imagen del vehiculo recortada (numpy array BGR)
@@ -180,7 +286,7 @@ class VehicleClassifier:
         Returns:
             dict: {
                 'brand': str, 
-                'brand_bbox': list|None,  # NUEVO: bbox del logo
+                'brand_bbox': list|None,
                 'color': str
             }
         """
@@ -189,6 +295,6 @@ class VehicleClassifier:
         
         return {
             'brand': brand_result['brand'],
-            'brand_bbox': brand_result['brand_bbox'],  # NUEVO
+            'brand_bbox': brand_result['brand_bbox'],
             'color': color
         }

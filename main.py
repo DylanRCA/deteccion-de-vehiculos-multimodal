@@ -53,6 +53,9 @@ class VehicleDetectorApp:
         self.processed_frames = []
         self.video_fps = 30.0
         
+        # NUEVO: Acumulador de vehiculos unicos detectados en video
+        self.video_vehicles_summary = {}  # track_id -> vehicle_info
+        
         # Crear interfaz
         self._create_widgets()
         
@@ -389,6 +392,7 @@ class VehicleDetectorApp:
             # Limpiar datos de video anterior
             self.processed_frames = []
             self.video_stats_history = []
+            self.video_vehicles_summary = {}  # NUEVO: Limpiar acumulador
             self.btn_replay.configure(state="disabled")
             
             # Reset pipeline antes de procesar nuevo video
@@ -430,7 +434,8 @@ class VehicleDetectorApp:
             self.status_label.configure(text="Procesando video...")
             
             annotated_frames = []
-            self.video_stats_history = []  # Reset historial de stats
+            self.video_stats_history = []
+            self.video_vehicles_summary = {}  # NUEVO: Reset acumulador
             frame_idx = 0
             self.progress.set(0)
             self.progress_label.configure(text="0%")
@@ -450,6 +455,9 @@ class VehicleDetectorApp:
                         result = self.pipeline.process_video_frame(frame)
                         annotated = result['annotated_image']
                         detections = result['detections']
+                        
+                        # NUEVO: Acumular informacion de vehiculos unicos
+                        self._accumulate_vehicle_info(detections)
                         
                         # Guardar stats de este frame para reproduccion
                         current_stats = self.pipeline.get_video_stats().copy()
@@ -477,13 +485,6 @@ class VehicleDetectorApp:
                     self.progress.set(progress)
                     self.progress_label.configure(text=f"{progress*100:5.1f}%")
 
-                # Actualizar info cada 5 frames
-                if frame_idx % 5 == 0 and self.pipeline:
-                    try:
-                        self._update_info_text(detections)
-                    except Exception as e:
-                        print(f"[APP-WARNING] Error actualizando UI: {str(e)}")
-
                 # Pausa minima
                 time.sleep(0.001)
             
@@ -491,6 +492,7 @@ class VehicleDetectorApp:
             
             print(f"\n[APP-VIDEO] Procesamiento completado - {frame_idx} frames procesados")
             print(f"[APP-VIDEO] Stats history: {len(self.video_stats_history)} registros")
+            print(f"[APP-VIDEO] Vehiculos unicos detectados: {len(self.video_vehicles_summary)}")
             
             # Guardar frames procesados para replay
             self.processed_frames = annotated_frames
@@ -502,6 +504,9 @@ class VehicleDetectorApp:
             self.progress.set(1)
             self.progress_label.configure(text="100%")
             self.status_label.configure(text="Video procesado, reproduciendo...")
+            
+            # NUEVO: Mostrar resumen de todos los vehiculos detectados
+            self._display_video_summary()
 
             print("[APP-VIDEO] Iniciando reproduccion con stats en tiempo real...\n")
             self._play_processed_frames(annotated_frames, fps)
@@ -510,6 +515,69 @@ class VehicleDetectorApp:
             error_msg = traceback.format_exc()
             print(f"[APP-ERROR] Error critico en procesamiento de video:\n{error_msg}")
             self.status_label.configure(text=f"Error en video: {str(e)}")
+    
+    def _accumulate_vehicle_info(self, detections):
+        """
+        NUEVO: Acumula informacion de vehiculos unicos durante el video.
+        
+        Args:
+            detections (list): Detecciones del frame actual
+        """
+        for det in detections:
+            track_id = det['id']
+            
+            # Si es la primera vez que vemos este vehiculo
+            if track_id not in self.video_vehicles_summary:
+                self.video_vehicles_summary[track_id] = {
+                    'id': track_id,
+                    'plate': det.get('Numero-Placa', '------'),
+                    'brand': det.get('brand', 'DESCONOCIDA'),
+                    'color': det.get('color', 'DESCONOCIDO'),
+                    'class': det.get('class', 'car'),
+                    'first_seen_frame': self.frame_counter
+                }
+    
+    def _display_video_summary(self):
+        """
+        NUEVO: Muestra resumen de TODOS los vehiculos detectados en el video.
+        """
+        try:
+            self.info_text.delete("1.0", "end")
+            
+            if not self.video_vehicles_summary:
+                self.info_text.insert("1.0", "No se detectaron vehiculos en el video")
+                return
+            
+            num_vehicles = len(self.video_vehicles_summary)
+            
+            # Contar vehiculos con placas legibles
+            vehicles_with_plates = sum(
+                1 for v in self.video_vehicles_summary.values() 
+                if v['plate'] not in ['------', 'SIN PLACA', 'NO DETECTADA'] 
+                and not v['plate'].startswith('TEMP_')
+            )
+            
+            info = f"RESUMEN VIDEO COMPLETO\n"
+            info += f"{'='*25}\n\n"
+            info += f"Total vehiculos unicos: {num_vehicles}\n"
+            info += f"Placas legibles: {vehicles_with_plates}\n\n"
+            info += f"{'='*25}\n\n"
+            
+            # Listar todos los vehiculos
+            for track_id, vehicle in sorted(self.video_vehicles_summary.items()):
+                info += f"VEHICULO ID #{vehicle['id']}\n"
+                info += f"{'-'*25}\n"
+                info += f"Placa: {vehicle['plate']}\n"
+                info += f"Marca: {vehicle['brand']}\n"
+                info += f"Color: {vehicle['color']}\n"
+                info += f"Tipo: {vehicle['class']}\n\n"
+            
+            self.info_text.insert("1.0", info)
+            
+            print(f"[APP-VIDEO] Resumen mostrado: {num_vehicles} vehiculos unicos")
+            
+        except Exception as e:
+            print(f"[APP-WARNING] Error mostrando resumen de video: {str(e)}")
     
     def _toggle_camera(self):
         """
@@ -662,6 +730,8 @@ class VehicleDetectorApp:
     def _update_info_text(self, detections):
         """
         Actualiza el area de texto con informacion de detecciones.
+        Para camara/imagen: muestra frame actual.
+        Para video: el resumen se muestra al final con _display_video_summary()
         """
         try:
             self.info_text.delete("1.0", "end")
