@@ -36,7 +36,7 @@ class VehicleListRow(ctk.CTkFrame):
         # Layout horizontal
         self.columnconfigure(0, weight=0)  # ID
         self.columnconfigure(1, weight=1)  # Placa
-        self.columnconfigure(2, weight=0)  # Tiempo
+        self.columnconfigure(2, weight=0)  # Info extra
         
         # ID
         id_label = ctk.CTkLabel(
@@ -63,16 +63,23 @@ class VehicleListRow(ctk.CTkFrame):
         plate_label.grid(row=0, column=1, padx=5, pady=6, sticky="w")
         plate_label.bind("<Button-1>", self._on_click)
         
-        # Rango de tiempo
-        time_range = vehicle_data.get('time_range', '')
-        time_label = ctk.CTkLabel(
-            self,
-            text=time_range,
-            font=("Arial", 9),
-            text_color="#AAAAAA"
-        )
-        time_label.grid(row=0, column=2, padx=(5, 8), pady=6, sticky="e")
-        time_label.bind("<Button-1>", self._on_click)
+        # Info extra (tiempo para video, marca/color para imagen/camara)
+        extra_info = vehicle_data.get('time_range', '')
+        if not extra_info:
+            # Para imagen/camara mostrar marca
+            brand = vehicle_data.get('brand', '')
+            if brand and brand != 'DESCONOCIDA':
+                extra_info = brand
+        
+        if extra_info:
+            extra_label = ctk.CTkLabel(
+                self,
+                text=extra_info,
+                font=("Arial", 9),
+                text_color="#AAAAAA"
+            )
+            extra_label.grid(row=0, column=2, padx=(5, 8), pady=6, sticky="e")
+            extra_label.bind("<Button-1>", self._on_click)
     
     def _on_click(self, event=None):
         """Maneja click en la fila."""
@@ -138,6 +145,12 @@ class VehicleDetectorApp:
         # Acumulador de vehiculos unicos detectados en video
         self.video_vehicles_summary = {}  # track_id -> vehicle_info
         
+        # Vehiculos detectados en imagen (para modo imagen)
+        self.image_detections = []
+        
+        # Vehiculos detectados en camara (para modo camara)
+        self.camera_vehicles = {}  # track_id -> vehicle_info
+        
         # Detecciones por frame para highlight preciso
         self.detections_per_frame = []  # [frame_idx] -> [detections]
         
@@ -148,6 +161,9 @@ class VehicleDetectorApp:
         # Control de reproduccion
         self.playback_active = False
         self.playback_stop_requested = False
+        
+        # Lock para actualizacion thread-safe de la lista
+        self.list_update_lock = threading.Lock()
         
         # Crear interfaz
         self._create_widgets()
@@ -362,7 +378,7 @@ class VehicleDetectorApp:
         # Subtitulo con instrucciones
         self.list_subtitle = ctk.CTkLabel(
             right_frame,
-            text="Click para ver segmento",
+            text="Click para ver detalle",
             font=("Arial", 9),
             text_color="gray"
         )
@@ -425,14 +441,23 @@ class VehicleDetectorApp:
         container = ctk.CTkFrame(self.detail_frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=10, pady=10)
         
+        # Construir lista de detalles segun el modo
         details = [
             ("ID:", f"#{vehicle_data['id']:02d}"),
             ("Placa:", vehicle_data.get('plate', '------')),
             ("Marca:", vehicle_data.get('brand', 'DESCONOCIDA')),
             ("Color:", vehicle_data.get('color', 'DESCONOCIDO')),
-            ("Frames:", f"{vehicle_data.get('first_frame', 0)} - {vehicle_data.get('last_frame', 0)}"),
-            ("Tiempo:", vehicle_data.get('time_range', 'N/A')),
         ]
+        
+        # Agregar info de tiempo solo para video
+        if self.current_mode == 'video' and 'first_frame' in vehicle_data:
+            details.append(("Frames:", f"{vehicle_data.get('first_frame', 0)} - {vehicle_data.get('last_frame', 0)}"))
+            details.append(("Tiempo:", vehicle_data.get('time_range', 'N/A')))
+        
+        # Agregar confianza para imagen
+        if self.current_mode == 'image' and 'confidence' in vehicle_data:
+            conf = vehicle_data.get('confidence', 0)
+            details.append(("Confianza:", f"{conf:.1%}"))
         
         for i, (label, value) in enumerate(details):
             ctk.CTkLabel(
@@ -474,12 +499,17 @@ class VehicleDetectorApp:
                 print(f"[APP-IMAGE] Imagen cargada - Dimensiones: {self.current_image.shape}")
                 
                 self.current_mode = 'image'
+                self._update_stats_mode_label()
                 self._display_image(self.current_image)
                 self.status_label.configure(text="Imagen cargada. Click 'Procesar'")
                 
                 # Limpiar lista y stats
+                self.image_detections = []
                 self._clear_vehicle_list()
                 self._clear_stats()
+                
+                # Deshabilitar replay (no aplica para imagen)
+                self.btn_replay.configure(state="disabled")
                 
             except Exception as e:
                 error_msg = traceback.format_exc()
@@ -622,6 +652,9 @@ class VehicleDetectorApp:
             self.progress_label.configure(text="100%")
             self.status_label.configure(text="Video procesado. Seleccione vehiculo o Reproduzca.")
             
+            # Actualizar subtitulo para video
+            self.list_subtitle.configure(text="Click para ver segmento")
+            
             # Poblar lista de vehiculos
             self._populate_vehicle_list()
 
@@ -673,7 +706,7 @@ class VehicleDetectorApp:
         return f"{minutes:02d}:{secs:02d}"
     
     def _populate_vehicle_list(self):
-        """Puebla la lista de vehiculos detectados."""
+        """Puebla la lista de vehiculos detectados (para video)."""
         self._clear_vehicle_list()
         
         if not self.video_vehicles_summary:
@@ -708,6 +741,137 @@ class VehicleDetectorApp:
             
             self.vehicle_rows[track_id] = row
     
+    def _populate_vehicle_list_from_detections(self, detections, source='image'):
+        """
+        Puebla la lista de vehiculos desde detecciones directas (imagen o camara).
+        
+        Args:
+            detections: Lista de detecciones
+            source: 'image' o 'camera'
+        """
+        with self.list_update_lock:
+            self._clear_vehicle_list()
+            
+            if not detections:
+                self.list_title.configure(text="VEHICULOS DETECTADOS (0)")
+                return
+            
+            # Actualizar titulo
+            count = len(detections)
+            self.list_title.configure(text=f"VEHICULOS DETECTADOS ({count})")
+            
+            for det in detections:
+                vehicle_id = det.get('id', 0)
+                
+                vehicle_data = {
+                    'id': vehicle_id,
+                    'plate': det.get('Numero-Placa', '------'),
+                    'brand': det.get('brand', 'DESCONOCIDA'),
+                    'color': det.get('color', 'DESCONOCIDO'),
+                    'class': det.get('class', 'car'),
+                    'confidence': det.get('confidence', 0.0),
+                    'bbox': det.get('bbox', []),
+                }
+                
+                # Crear fila
+                row = VehicleListRow(
+                    self.vehicle_list_frame,
+                    vehicle_data,
+                    self._on_vehicle_click_image if source == 'image' else self._on_vehicle_click_camera,
+                    is_selected=(vehicle_id == self.selected_vehicle_id)
+                )
+                row.pack(fill="x", pady=2, padx=2)
+                
+                self.vehicle_rows[vehicle_id] = row
+    
+    def _update_camera_vehicle_list(self, detections):
+        """
+        Actualiza la lista de vehiculos en modo camara.
+        Mantiene vehiculos existentes y agrega nuevos.
+        
+        Args:
+            detections: Lista de detecciones del frame actual
+        """
+        changed = False
+        
+        for det in detections:
+            track_id = det.get('id', 0)
+            
+            if track_id not in self.camera_vehicles:
+                # Nuevo vehiculo
+                self.camera_vehicles[track_id] = {
+                    'id': track_id,
+                    'plate': det.get('Numero-Placa', '------'),
+                    'brand': det.get('brand', 'DESCONOCIDA'),
+                    'color': det.get('color', 'DESCONOCIDO'),
+                    'class': det.get('class', 'car'),
+                    'confidence': det.get('confidence', 0.0),
+                    'bbox': det.get('bbox', []),
+                    'last_seen': time.time()
+                }
+                changed = True
+            else:
+                # Actualizar vehiculo existente
+                self.camera_vehicles[track_id]['last_seen'] = time.time()
+                self.camera_vehicles[track_id]['bbox'] = det.get('bbox', [])
+                
+                # Actualizar placa si se detecto una mejor
+                current_plate = self.camera_vehicles[track_id]['plate']
+                new_plate = det.get('Numero-Placa', '------')
+                if current_plate == '------' and new_plate != '------':
+                    self.camera_vehicles[track_id]['plate'] = new_plate
+                    changed = True
+        
+        # Limpiar vehiculos no vistos en los ultimos 5 segundos
+        current_time = time.time()
+        old_count = len(self.camera_vehicles)
+        self.camera_vehicles = {
+            k: v for k, v in self.camera_vehicles.items()
+            if current_time - v.get('last_seen', 0) < 5.0
+        }
+        if len(self.camera_vehicles) != old_count:
+            changed = True
+        
+        # Refrescar lista si hubo cambios
+        if changed:
+            self._refresh_camera_list()
+    
+    def _refresh_camera_list(self):
+        """Refresca la lista de vehiculos para modo camara."""
+        # Ejecutar en el hilo principal de UI
+        self.root.after(0, self._do_refresh_camera_list)
+    
+    def _do_refresh_camera_list(self):
+        """Implementacion real del refresco de lista (debe ejecutarse en hilo UI)."""
+        with self.list_update_lock:
+            # Limpiar lista actual
+            for widget in self.vehicle_list_frame.winfo_children():
+                widget.destroy()
+            self.vehicle_rows = {}
+            
+            if not self.camera_vehicles:
+                self.list_title.configure(text="VEHICULOS DETECTADOS (0)")
+                return
+            
+            # Actualizar titulo
+            count = len(self.camera_vehicles)
+            self.list_title.configure(text=f"VEHICULOS DETECTADOS ({count})")
+            
+            # Ordenar por ID
+            sorted_vehicles = sorted(self.camera_vehicles.items(), key=lambda x: x[0])
+            
+            for track_id, vehicle in sorted_vehicles:
+                # Crear fila
+                row = VehicleListRow(
+                    self.vehicle_list_frame,
+                    vehicle,
+                    self._on_vehicle_click_camera,
+                    is_selected=(track_id == self.selected_vehicle_id)
+                )
+                row.pack(fill="x", pady=2, padx=2)
+                
+                self.vehicle_rows[track_id] = row
+    
     def _clear_vehicle_list(self):
         """Limpia la lista de vehiculos."""
         for widget in self.vehicle_list_frame.winfo_children():
@@ -718,7 +882,7 @@ class VehicleDetectorApp:
         self._update_detail_panel(None)
     
     def _on_vehicle_click(self, vehicle_data):
-        """Maneja click en un vehiculo de la lista."""
+        """Maneja click en un vehiculo de la lista (modo video)."""
         track_id = vehicle_data['id']
         
         print(f"[APP-UI] Click en vehiculo #{track_id}")
@@ -748,6 +912,89 @@ class VehicleDetectorApp:
             self.status_label.configure(text=f"Reproduciendo vehiculo #{track_id}")
             
             self._play_frames(first_frame, last_frame, highlight_id=track_id)
+    
+    def _on_vehicle_click_image(self, vehicle_data):
+        """Maneja click en un vehiculo de la lista (modo imagen)."""
+        vehicle_id = vehicle_data['id']
+        
+        print(f"[APP-UI] Click en vehiculo #{vehicle_id} (imagen)")
+        
+        # Actualizar seleccion visual
+        if self.selected_vehicle_id is not None and self.selected_vehicle_id in self.vehicle_rows:
+            self.vehicle_rows[self.selected_vehicle_id].set_selected(False)
+        
+        self.selected_vehicle_id = vehicle_id
+        
+        if vehicle_id in self.vehicle_rows:
+            self.vehicle_rows[vehicle_id].set_selected(True)
+        
+        # Actualizar panel de detalle
+        self._update_detail_panel(vehicle_data)
+        
+        # Re-dibujar imagen con highlight del vehiculo seleccionado
+        if self.current_image is not None and self.image_detections:
+            self._display_image_with_highlight(self.current_image, self.image_detections, vehicle_id)
+    
+    def _on_vehicle_click_camera(self, vehicle_data):
+        """Maneja click en un vehiculo de la lista (modo camara)."""
+        vehicle_id = vehicle_data['id']
+        
+        print(f"[APP-UI] Click en vehiculo #{vehicle_id} (camara)")
+        
+        # Actualizar seleccion visual
+        if self.selected_vehicle_id is not None and self.selected_vehicle_id in self.vehicle_rows:
+            self.vehicle_rows[self.selected_vehicle_id].set_selected(False)
+        
+        self.selected_vehicle_id = vehicle_id
+        
+        if vehicle_id in self.vehicle_rows:
+            self.vehicle_rows[vehicle_id].set_selected(True)
+        
+        # Actualizar panel de detalle
+        self._update_detail_panel(vehicle_data)
+    
+    def _display_image_with_highlight(self, original_image, detections, highlight_id):
+        """
+        Muestra la imagen con el vehiculo seleccionado resaltado.
+        
+        Args:
+            original_image: Imagen original
+            detections: Lista de detecciones
+            highlight_id: ID del vehiculo a resaltar
+        """
+        # Copiar imagen
+        output = original_image.copy()
+        
+        # Dibujar todas las detecciones
+        for det in detections:
+            bbox = det.get('bbox', [])
+            if not bbox or len(bbox) != 4:
+                continue
+            
+            x1, y1, x2, y2 = [int(c) for c in bbox]
+            vehicle_id = det.get('id', 0)
+            
+            if vehicle_id == highlight_id:
+                # Vehiculo seleccionado - amarillo grueso
+                cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 255), 4)
+                
+                # Etiqueta
+                label = f"#{vehicle_id}"
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                cv2.rectangle(output, 
+                             (x1, y1 - label_size[1] - 10),
+                             (x1 + label_size[0] + 10, y1),
+                             (0, 255, 255), -1)
+                cv2.putText(output, label, (x1 + 5, y1 - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+            else:
+                # Otros vehiculos - verde normal
+                cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                label = f"#{vehicle_id}"
+                cv2.putText(output, label, (x1 + 5, y1 - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        self._display_image(output)
     
     def _play_frames(self, start_frame, end_frame, highlight_id=None):
         """
@@ -889,6 +1136,9 @@ class VehicleDetectorApp:
             self.current_mode = 'camera'
             self._update_stats_mode_label()
             
+            # Limpiar vehiculos de camara anterior
+            self.camera_vehicles = {}
+            
             if self.pipeline:
                 self.pipeline.reset()
                 self.pipeline.mode = 'camera'
@@ -897,6 +1147,12 @@ class VehicleDetectorApp:
             self.camera_active = True
             self.btn_camera.configure(text="Detener Camara", fg_color="red")
             self._clear_vehicle_list()
+            
+            # Actualizar subtitulo
+            self.list_subtitle.configure(text="Click para ver detalle")
+            
+            # Deshabilitar replay
+            self.btn_replay.configure(state="disabled")
             
             threading.Thread(target=self._camera_loop, daemon=True).start()
         else:
@@ -927,12 +1183,23 @@ class VehicleDetectorApp:
                 try:
                     if self.pipeline:
                         result = self.pipeline.process_video_frame(frame)
-                        self._display_image(result['annotated_image'])
+                        annotated = result['annotated_image']
+                        detections = result['detections']
+                        
+                        # Aplicar highlight si hay vehiculo seleccionado
+                        if self.selected_vehicle_id is not None:
+                            annotated = self._apply_camera_highlight(annotated, detections, self.selected_vehicle_id)
+                        
+                        self._display_image(annotated)
                         
                         self.frame_counter += 1
                         if self.frame_counter >= self.stats_update_interval:
                             self._update_stats()
                             self.frame_counter = 0
+                        
+                        # Actualizar lista de vehiculos cada 10 frames
+                        if self.frame_counter % 10 == 0:
+                            self._update_camera_vehicle_list(detections)
                     else:
                         self._display_image(frame)
                 except Exception as e:
@@ -948,6 +1215,41 @@ class VehicleDetectorApp:
             error_msg = traceback.format_exc()
             print(f"[APP-ERROR] Error en camara:\n{error_msg}")
             self.camera_active = False
+    
+    def _apply_camera_highlight(self, frame, detections, highlight_id):
+        """
+        Aplica highlight al vehiculo seleccionado en modo camara.
+        
+        Args:
+            frame: Frame anotado
+            detections: Lista de detecciones
+            highlight_id: ID del vehiculo a resaltar
+            
+        Returns:
+            Frame con highlight
+        """
+        output = frame.copy()
+        
+        # Buscar el vehiculo
+        target = None
+        for det in detections:
+            if det.get('id') == highlight_id:
+                target = det
+                break
+        
+        if not target:
+            return output
+        
+        bbox = target.get('bbox', [])
+        if not bbox or len(bbox) != 4:
+            return output
+        
+        x1, y1, x2, y2 = [int(c) for c in bbox]
+        
+        # Dibujar highlight amarillo
+        cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 255), 4)
+        
+        return output
     
     def _process_current(self):
         """Procesa la imagen actual cargada."""
@@ -969,6 +1271,9 @@ class VehicleDetectorApp:
             
             result = self.pipeline.process_image(self.current_image)
             
+            # Guardar detecciones para uso posterior
+            self.image_detections = result['detections']
+            
             self._display_image(result['annotated_image'])
             
             num_detections = len(result['detections'])
@@ -977,6 +1282,14 @@ class VehicleDetectorApp:
             self.status_label.configure(
                 text=f"Procesado: {num_detections} vehiculos"
             )
+            
+            # Actualizar subtitulo
+            self.list_subtitle.configure(text="Click para resaltar")
+            
+            # Poblar lista de vehiculos con las detecciones
+            self.root.after(0, lambda: self._populate_vehicle_list_from_detections(
+                self.image_detections, source='image'
+            ))
             
         except Exception as e:
             error_msg = traceback.format_exc()
@@ -1022,6 +1335,8 @@ class VehicleDetectorApp:
             self.stats_mode_label.configure(text="(Video - Temporal)")
         elif self.current_mode == 'camera':
             self.stats_mode_label.configure(text="(Camara - BD)")
+        elif self.current_mode == 'image':
+            self.stats_mode_label.configure(text="(Imagen)")
         else:
             self.stats_mode_label.configure(text="")
     
@@ -1057,6 +1372,13 @@ class VehicleDetectorApp:
                     self.stats_labels['inside'].configure(text=f"DENTRO: {stats['inside']}")
                     self.stats_labels['entries'].configure(text=f"ENTRADAS: {stats['entries_today']}")
                     self.stats_labels['exits'].configure(text=f"SALIDAS: {stats['exits_today']}")
+            
+            elif self.current_mode == 'image':
+                # Para imagen, mostrar cantidad de vehiculos detectados
+                count = len(self.image_detections)
+                self.stats_labels['inside'].configure(text=f"DETECTADOS: {count}")
+                self.stats_labels['entries'].configure(text="ENTRADAS: N/A")
+                self.stats_labels['exits'].configure(text="SALIDAS: N/A")
             else:
                 self._clear_stats()
                 
