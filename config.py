@@ -107,7 +107,7 @@ REDUCE_DB_LOGGING = True
 
 # Intervalo de re-deteccion de bbox de placa y logo (frames)
 # OPTIMIZADO: Reduce carga de OCR y deteccion de logos
-REDETECTION_INTERVAL_CAMERA = 30  # Camara: cada 1 segundo a 30fps
+REDETECTION_INTERVAL_CAMERA = 15  # Camara: cada 1 segundo a 30fps
 REDETECTION_INTERVAL_VIDEO = 5    # Video: cada 5 frames para precision
 
 # Frames maximos sin deteccion antes de ocultar bbox

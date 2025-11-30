@@ -1,7 +1,7 @@
 import customtkinter as ctk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, Canvas
 import cv2
-from PIL import Image
+from PIL import Image, ImageTk
 import threading
 import os
 import sys
@@ -16,6 +16,80 @@ import config
 from src.pipeline import VehicleDetectionPipeline
 
 
+class VehicleListRow(ctk.CTkFrame):
+    """Fila individual en la lista de vehiculos detectados."""
+    
+    def __init__(self, parent, vehicle_data, on_click_callback, is_odd=False):
+        super().__init__(parent, fg_color=("#2B2B2B" if is_odd else "#333333"), corner_radius=0)
+        
+        self.vehicle_data = vehicle_data
+        self.on_click_callback = on_click_callback
+        self.is_selected = False
+        
+        # Frame interno para padding
+        content = ctk.CTkFrame(self, fg_color="transparent")
+        content.pack(fill="x", padx=8, pady=4)
+        
+        # ID
+        id_label = ctk.CTkLabel(
+            content,
+            text=f"#{vehicle_data['id']:02d}",
+            width=35,
+            font=("Consolas", 12, "bold"),
+            anchor="w",
+            text_color="white"
+        )
+        id_label.pack(side="left", padx=(0, 5))
+        
+        # Placa
+        plate = vehicle_data['plate']
+        if len(plate) > 10:
+            plate = plate[:8] + ".."
+        
+        plate_label = ctk.CTkLabel(
+            content,
+            text=plate,
+            width=90,
+            font=("Consolas", 11),
+            anchor="w",
+            text_color="white"
+        )
+        plate_label.pack(side="left", padx=(0, 5))
+        
+        # Tiempo
+        time_text = vehicle_data.get('time_range', 'N/A')
+        time_label = ctk.CTkLabel(
+            content,
+            text=time_text,
+            width=120,
+            font=("Consolas", 10),
+            anchor="w",
+            text_color="#AAAAAA"
+        )
+        time_label.pack(side="left")
+        
+        # Bind click en todo el frame
+        self.bind("<Button-1>", self._on_click)
+        content.bind("<Button-1>", self._on_click)
+        for widget in content.winfo_children():
+            widget.bind("<Button-1>", self._on_click)
+    
+    def _on_click(self, event):
+        """Maneja el click en la fila."""
+        self.on_click_callback(self.vehicle_data['id'])
+    
+    def set_selected(self, selected):
+        """Resalta o desresalta la fila."""
+        self.is_selected = selected
+        if selected:
+            self.configure(fg_color="#2E7D32")  # Verde oscuro
+            # Texto ya es blanco, mantener
+        else:
+            # Restaurar color original oscuro
+            is_odd = self.vehicle_data['id'] % 2 == 1
+            self.configure(fg_color=("#2B2B2B" if is_odd else "#333333"))
+
+
 class VehicleDetectorApp:
     def __init__(self):
         """
@@ -27,7 +101,7 @@ class VehicleDetectorApp:
         
         self.root = ctk.CTk()
         self.root.title("Detector de Vehiculos - Peru")
-        self.root.geometry("1400x800")
+        self.root.geometry("1600x900")
         
         # Configurar tema
         ctk.set_appearance_mode("dark")
@@ -53,8 +127,17 @@ class VehicleDetectorApp:
         self.processed_frames = []
         self.video_fps = 30.0
         
-        # NUEVO: Acumulador de vehiculos unicos detectados en video
+        # Acumulador de vehiculos unicos detectados en video
         self.video_vehicles_summary = {}  # track_id -> vehicle_info
+        
+        # Estado de seleccion
+        self.selected_vehicle_id = None
+        self.vehicle_list_rows = {}  # track_id -> VehicleListRow widget
+        
+        # Detecciones actuales (para click en canvas)
+        self.current_detections = []
+        self.current_image_original = None  # Imagen original sin resize
+        self.current_image_display_size = (0, 0)  # Tamano mostrado
         
         # Crear interfaz
         self._create_widgets()
@@ -96,7 +179,7 @@ class VehicleDetectorApp:
         main_frame = ctk.CTkFrame(self.root)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # === COLUMNA IZQUIERDA: Controles ===
+        # === COLUMNA IZQUIERDA: Controles + Estadisticas ===
         control_frame = ctk.CTkFrame(main_frame, width=250)
         control_frame.pack(side="left", fill="y", padx=(0, 10))
         control_frame.pack_propagate(False)
@@ -105,227 +188,249 @@ class VehicleDetectorApp:
         title_label = ctk.CTkLabel(
             control_frame,
             text="Detector de Vehiculos",
-            font=("Arial", 20, "bold")
+            font=("Arial", 18, "bold")
         )
-        title_label.pack(pady=20)
+        title_label.pack(pady=15)
         
         # Botones de control
         self.btn_image = ctk.CTkButton(
             control_frame,
             text="Subir Imagen",
             command=self._load_image,
-            height=40
+            height=35
         )
-        self.btn_image.pack(pady=10, padx=20, fill="x")
+        self.btn_image.pack(pady=8, padx=20, fill="x")
         
         self.btn_video = ctk.CTkButton(
             control_frame,
             text="Subir Video",
             command=self._load_video,
-            height=40
+            height=35
         )
-        self.btn_video.pack(pady=10, padx=20, fill="x")
+        self.btn_video.pack(pady=8, padx=20, fill="x")
         
         self.btn_camera = ctk.CTkButton(
             control_frame,
             text="Activar Camara",
             command=self._toggle_camera,
-            height=40
+            height=35
         )
-        self.btn_camera.pack(pady=10, padx=20, fill="x")
+        self.btn_camera.pack(pady=8, padx=20, fill="x")
         
         self.btn_process = ctk.CTkButton(
             control_frame,
             text="Procesar",
             command=self._process_current,
-            height=40,
+            height=35,
             fg_color="green"
         )
-        self.btn_process.pack(pady=10, padx=20, fill="x")
+        self.btn_process.pack(pady=8, padx=20, fill="x")
         
-        # Boton para reproducir video procesado nuevamente
         self.btn_replay = ctk.CTkButton(
             control_frame,
             text="Reproducir Video",
             command=self._replay_video,
-            height=40,
+            height=35,
             fg_color="#FF9800",
             state="disabled"
         )
-        self.btn_replay.pack(pady=10, padx=20, fill="x")
+        self.btn_replay.pack(pady=8, padx=20, fill="x")
         
-        # Separador
-        separator = ctk.CTkFrame(control_frame, height=2)
-        separator.pack(pady=20, padx=20, fill="x")
-        
-        # Area de informacion de detecciones
-        info_label = ctk.CTkLabel(
-            control_frame,
-            text="Informacion de Detecciones",
-            font=("Arial", 14, "bold")
-        )
-        info_label.pack(pady=10)
-        
-        self.info_text = ctk.CTkTextbox(
-            control_frame,
-            width=230,
-            height=250
-        )
-        self.info_text.pack(pady=10, padx=20)
-
-        # Barra de progreso para procesamiento de video
+        # Barra de progreso
         self.progress = ctk.CTkProgressBar(control_frame, width=200)
         self.progress.set(0)
         self.progress.pack(pady=5, padx=20)
-        self.progress_label = ctk.CTkLabel(control_frame, text="")
+        self.progress_label = ctk.CTkLabel(control_frame, text="", font=("Arial", 9))
         self.progress_label.pack(pady=(0, 10))
         
-        # Estado
-        self.status_label = ctk.CTkLabel(
+        # Separador
+        separator = ctk.CTkFrame(control_frame, height=2, fg_color="gray")
+        separator.pack(pady=15, padx=20, fill="x")
+        
+        # === ESTADISTICAS (NUEVO: en parte inferior de controles) ===
+        stats_title = ctk.CTkLabel(
             control_frame,
-            text="Inicializando...",
-            font=("Arial", 10)
-        )
-        self.status_label.pack(side="bottom", pady=10)
-        
-        # === COLUMNA CENTRO: Visualizacion ===
-        display_frame = ctk.CTkFrame(main_frame)
-        display_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
-        
-        # Canvas para mostrar imagen/video
-        self.canvas = ctk.CTkLabel(
-            display_frame,
-            text="Cargue una imagen, video o active la camara",
-            font=("Arial", 16)
-        )
-        self.canvas.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # === COLUMNA DERECHA: Estadisticas ===
-        stats_frame = ctk.CTkFrame(main_frame, width=200)
-        stats_frame.pack(side="right", fill="y")
-        stats_frame.pack_propagate(False)
-        
-        # Titulo con indicador de modo
-        self.stats_title = ctk.CTkLabel(
-            stats_frame,
             text="ESTADISTICAS",
-            font=("Arial", 18, "bold")
+            font=("Arial", 14, "bold")
         )
-        self.stats_title.pack(pady=20)
+        stats_title.pack(pady=(10, 5))
         
-        # Indicador de modo
         self.stats_mode_label = ctk.CTkLabel(
-            stats_frame,
+            control_frame,
             text="",
-            font=("Arial", 10),
+            font=("Arial", 9),
             text_color="gray"
         )
-        self.stats_mode_label.pack(pady=(0, 10))
+        self.stats_mode_label.pack(pady=(0, 8))
         
-        # Separador
-        ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=10)
-        
-        # Stats labels
+        # Stats compactas
         self.stats_labels = {}
+        
+        stats_container = ctk.CTkFrame(control_frame, fg_color="transparent")
+        stats_container.pack(fill="x", padx=15)
         
         # DENTRO
         self.stats_labels['inside'] = ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="DENTRO: 0",
-            font=("Arial", 16, "bold"),
-            text_color="#4CAF50"
+            font=("Arial", 13, "bold"),
+            text_color="#4CAF50",
+            anchor="w"
         )
-        self.stats_labels['inside'].pack(pady=10, padx=20, anchor="w")
+        self.stats_labels['inside'].pack(pady=3, anchor="w")
         
-        # ENTRADAS
+        # ENTRADAS/SALIDAS
         self.stats_labels['entries'] = ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="ENTRADAS: 0",
-            font=("Arial", 14)
+            font=("Arial", 11),
+            anchor="w"
         )
-        self.stats_labels['entries'].pack(pady=5, padx=20, anchor="w")
+        self.stats_labels['entries'].pack(pady=2, anchor="w")
         
-        # SALIDAS
         self.stats_labels['exits'] = ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="SALIDAS: 0",
-            font=("Arial", 14)
+            font=("Arial", 11),
+            anchor="w"
         )
-        self.stats_labels['exits'].pack(pady=5, padx=20, anchor="w")
+        self.stats_labels['exits'].pack(pady=2, anchor="w")
         
-        # Separador
-        ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=15)
+        # Mini separador
+        ctk.CTkFrame(stats_container, height=1, fg_color="gray").pack(fill="x", pady=8)
         
         # ULTIMA ENTRADA
         ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="ULTIMA ENTRADA:",
-            font=("Arial", 12, "bold")
-        ).pack(pady=(10, 5), padx=20, anchor="w")
+            font=("Arial", 10, "bold"),
+            anchor="w"
+        ).pack(pady=(5, 2), anchor="w")
         
         self.stats_labels['last_entry_plate'] = ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="---",
-            font=("Arial", 11)
+            font=("Arial", 10),
+            anchor="w"
         )
-        self.stats_labels['last_entry_plate'].pack(pady=2, padx=20, anchor="w")
+        self.stats_labels['last_entry_plate'].pack(pady=1, anchor="w")
         
         self.stats_labels['last_entry_time'] = ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="",
-            font=("Arial", 10),
-            text_color="gray"
+            font=("Arial", 9),
+            text_color="gray",
+            anchor="w"
         )
-        self.stats_labels['last_entry_time'].pack(pady=2, padx=20, anchor="w")
+        self.stats_labels['last_entry_time'].pack(pady=1, anchor="w")
         
         # ULTIMA SALIDA
         ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="ULTIMA SALIDA:",
-            font=("Arial", 12, "bold")
-        ).pack(pady=(10, 5), padx=20, anchor="w")
+            font=("Arial", 10, "bold"),
+            anchor="w"
+        ).pack(pady=(8, 2), anchor="w")
         
         self.stats_labels['last_exit_plate'] = ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="---",
-            font=("Arial", 11)
+            font=("Arial", 10),
+            anchor="w"
         )
-        self.stats_labels['last_exit_plate'].pack(pady=2, padx=20, anchor="w")
+        self.stats_labels['last_exit_plate'].pack(pady=1, anchor="w")
         
         self.stats_labels['last_exit_time'] = ctk.CTkLabel(
-            stats_frame,
+            stats_container,
             text="",
-            font=("Arial", 10),
-            text_color="gray"
+            font=("Arial", 9),
+            text_color="gray",
+            anchor="w"
         )
-        self.stats_labels['last_exit_time'].pack(pady=2, padx=20, anchor="w")
+        self.stats_labels['last_exit_time'].pack(pady=1, anchor="w")
+        
+        # Estado (al final)
+        self.status_label = ctk.CTkLabel(
+            control_frame,
+            text="Inicializando...",
+            font=("Arial", 9),
+            wraplength=220
+        )
+        self.status_label.pack(side="bottom", pady=10)
+        
+        # === COLUMNA CENTRO: Visualizacion (Canvas) ===
+        display_frame = ctk.CTkFrame(main_frame)
+        display_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        
+        # Usar Canvas de tkinter en lugar de CTkLabel para permitir clicks
+        self.canvas = Canvas(
+            display_frame,
+            bg="#2B2B2B",
+            highlightthickness=0
+        )
+        self.canvas.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Texto inicial
+        self.canvas_text_id = self.canvas.create_text(
+            400, 300,
+            text="Cargue una imagen, video o active la camara",
+            fill="white",
+            font=("Arial", 16)
+        )
+        
+        # Bind click
+        self.canvas.bind("<Button-1>", self._on_canvas_click)
+        
+        # === COLUMNA DERECHA: Lista + Detalle ===
+        right_panel = ctk.CTkFrame(main_frame, width=320)
+        right_panel.pack(side="right", fill="y")
+        right_panel.pack_propagate(False)
+        
+        # Panel superior: Lista de vehiculos
+        list_header = ctk.CTkFrame(right_panel, fg_color="#1E1E1E", corner_radius=0)
+        list_header.pack(fill="x", pady=(0, 0))
+        
+        self.list_title = ctk.CTkLabel(
+            list_header,
+            text="VEHICULOS DETECTADOS (0)",
+            font=("Arial", 13, "bold"),
+            text_color="#4CAF50"
+        )
+        self.list_title.pack(pady=10)
+        
+        # ScrollableFrame para lista
+        self.vehicle_list_frame = ctk.CTkScrollableFrame(
+            right_panel,
+            height=300,
+            fg_color="#2B2B2B"
+        )
+        self.vehicle_list_frame.pack(fill="both", expand=True, pady=(0, 10))
         
         # Separador
-        ctk.CTkFrame(stats_frame, height=2, fg_color="gray").pack(fill="x", padx=20, pady=15)
+        ctk.CTkFrame(right_panel, height=2, fg_color="gray").pack(fill="x", pady=0)
         
-        # DURACION PROMEDIO (solo en modo camara/BD)
-        ctk.CTkLabel(
-            stats_frame,
-            text="DURACION PROM:",
+        # Panel inferior: Detalle del vehiculo
+        detail_header = ctk.CTkFrame(right_panel, fg_color="#1E1E1E", corner_radius=0)
+        detail_header.pack(fill="x")
+        
+        self.detail_title = ctk.CTkLabel(
+            detail_header,
+            text="DETALLE VEHICULO",
             font=("Arial", 12, "bold")
-        ).pack(pady=(10, 5), padx=20, anchor="w")
-        
-        self.stats_labels['avg_duration'] = ctk.CTkLabel(
-            stats_frame,
-            text="---",
-            font=("Arial", 14)
         )
-        self.stats_labels['avg_duration'].pack(pady=2, padx=20, anchor="w")
+        self.detail_title.pack(pady=8)
         
-        # Boton de refrescar stats manualmente
-        self.btn_refresh_stats = ctk.CTkButton(
-            stats_frame,
-            text="Actualizar",
-            command=self._update_stats,
-            height=30,
-            width=160
+        self.detail_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
+        self.detail_frame.pack(fill="both", padx=15, pady=10)
+        
+        # Mensaje inicial
+        self.detail_empty_label = ctk.CTkLabel(
+            self.detail_frame,
+            text="Seleccione un vehiculo\npara ver detalles",
+            font=("Arial", 11),
+            text_color="gray"
         )
-        self.btn_refresh_stats.pack(pady=20, padx=20)
+        self.detail_empty_label.pack(expand=True)
         
         # Inicializar stats vacias
         self._clear_stats()
@@ -357,9 +462,15 @@ class VehicleDetectorApp:
                 print(f"[APP-IMAGE] Imagen cargada - Dimensiones: {self.current_image.shape}")
                 
                 self.current_mode = 'image'
+                
+                # Limpiar datos previos
+                self.current_detections = []
+                self.current_image_original = None
+                self.selected_vehicle_id = None
+                self._clear_vehicle_list()
+                self._clear_detail_panel()
+                
                 self._display_image(self.current_image)
-                self.info_text.delete("1.0", "end")
-                self.info_text.insert("1.0", "Imagen cargada. Presione 'Procesar'.")
                 self.status_label.configure(text="Imagen cargada")
                 
                 # Limpiar stats en modo imagen
@@ -392,8 +503,15 @@ class VehicleDetectorApp:
             # Limpiar datos de video anterior
             self.processed_frames = []
             self.video_stats_history = []
-            self.video_vehicles_summary = {}  # NUEVO: Limpiar acumulador
+            self.video_vehicles_summary = {}
+            self._clear_vehicle_list()
+            self._clear_detail_panel()
             self.btn_replay.configure(state="disabled")
+            
+            # NUEVO: Limpiar datos de imagen/video anterior
+            self.current_detections = []
+            self.current_image_original = None
+            self.selected_vehicle_id = None
             
             # Reset pipeline antes de procesar nuevo video
             if self.pipeline:
@@ -435,7 +553,7 @@ class VehicleDetectorApp:
             
             annotated_frames = []
             self.video_stats_history = []
-            self.video_vehicles_summary = {}  # NUEVO: Reset acumulador
+            self.video_vehicles_summary = {}
             frame_idx = 0
             self.progress.set(0)
             self.progress_label.configure(text="0%")
@@ -456,8 +574,8 @@ class VehicleDetectorApp:
                         annotated = result['annotated_image']
                         detections = result['detections']
                         
-                        # NUEVO: Acumular informacion de vehiculos unicos
-                        self._accumulate_vehicle_info(detections)
+                        # Acumular informacion de vehiculos unicos
+                        self._accumulate_vehicle_info(detections, frame_idx, fps)
                         
                         # Guardar stats de este frame para reproduccion
                         current_stats = self.pipeline.get_video_stats().copy()
@@ -505,8 +623,8 @@ class VehicleDetectorApp:
             self.progress_label.configure(text="100%")
             self.status_label.configure(text="Video procesado, reproduciendo...")
             
-            # NUEVO: Mostrar resumen de todos los vehiculos detectados
-            self._display_video_summary()
+            # Mostrar lista de vehiculos
+            self._populate_vehicle_list()
 
             print("[APP-VIDEO] Iniciando reproduccion con stats en tiempo real...\n")
             self._play_processed_frames(annotated_frames, fps)
@@ -516,12 +634,14 @@ class VehicleDetectorApp:
             print(f"[APP-ERROR] Error critico en procesamiento de video:\n{error_msg}")
             self.status_label.configure(text=f"Error en video: {str(e)}")
     
-    def _accumulate_vehicle_info(self, detections):
+    def _accumulate_vehicle_info(self, detections, frame_idx, fps):
         """
-        NUEVO: Acumula informacion de vehiculos unicos durante el video.
+        Acumula informacion de vehiculos unicos durante el video.
         
         Args:
             detections (list): Detecciones del frame actual
+            frame_idx (int): Numero de frame actual
+            fps (float): Frames por segundo del video
         """
         for det in detections:
             track_id = det['id']
@@ -534,50 +654,421 @@ class VehicleDetectorApp:
                     'brand': det.get('brand', 'DESCONOCIDA'),
                     'color': det.get('color', 'DESCONOCIDO'),
                     'class': det.get('class', 'car'),
-                    'first_seen_frame': self.frame_counter
+                    'confidence': det.get('confidence', 0.0),
+                    'first_frame': frame_idx,
+                    'last_frame': frame_idx,
+                    'fps': fps
                 }
+            else:
+                # Actualizar ultimo frame visto
+                self.video_vehicles_summary[track_id]['last_frame'] = frame_idx
     
-    def _display_video_summary(self):
+    def _frames_to_time(self, frame, fps):
         """
-        NUEVO: Muestra resumen de TODOS los vehiculos detectados en el video.
+        Convierte numero de frame a formato HH:MM:SS.
+        
+        Args:
+            frame (int): Numero de frame
+            fps (float): Frames por segundo
+            
+        Returns:
+            str: Tiempo en formato HH:MM:SS
         """
-        try:
-            self.info_text.delete("1.0", "end")
+        seconds = frame / fps
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    
+    def _populate_vehicle_list(self):
+        """
+        Puebla la lista de vehiculos detectados.
+        """
+        self._clear_vehicle_list()
+        
+        if not self.video_vehicles_summary:
+            return
+        
+        # Ordenar por ID
+        sorted_vehicles = sorted(self.video_vehicles_summary.items(), key=lambda x: x[0])
+        
+        # Actualizar titulo
+        self.list_title.configure(text=f"VEHICULOS DETECTADOS ({len(sorted_vehicles)})")
+        
+        # Crear filas
+        for idx, (track_id, vehicle) in enumerate(sorted_vehicles):
+            # Calcular tiempo
+            fps = vehicle.get('fps', 30.0)
+            time_start = self._frames_to_time(vehicle['first_frame'], fps)
+            time_end = self._frames_to_time(vehicle['last_frame'], fps)
+            time_range = f"{time_start} - {time_end}"
             
-            if not self.video_vehicles_summary:
-                self.info_text.insert("1.0", "No se detectaron vehiculos en el video")
-                return
+            vehicle_data = {
+                'id': track_id,
+                'plate': vehicle['plate'],
+                'time_range': time_range,
+                **vehicle
+            }
             
-            num_vehicles = len(self.video_vehicles_summary)
-            
-            # Contar vehiculos con placas legibles
-            vehicles_with_plates = sum(
-                1 for v in self.video_vehicles_summary.values() 
-                if v['plate'] not in ['------', 'SIN PLACA', 'NO DETECTADA'] 
-                and not v['plate'].startswith('TEMP_')
+            # Crear fila
+            row = VehicleListRow(
+                self.vehicle_list_frame,
+                vehicle_data,
+                self._on_vehicle_selected,
+                is_odd=(idx % 2 == 1)
             )
+            row.pack(fill="x", pady=0)
             
-            info = f"RESUMEN VIDEO COMPLETO\n"
-            info += f"{'='*25}\n\n"
-            info += f"Total vehiculos unicos: {num_vehicles}\n"
-            info += f"Placas legibles: {vehicles_with_plates}\n\n"
-            info += f"{'='*25}\n\n"
+            self.vehicle_list_rows[track_id] = row
+    
+    def _clear_vehicle_list(self):
+        """
+        Limpia la lista de vehiculos.
+        """
+        for widget in self.vehicle_list_frame.winfo_children():
+            widget.destroy()
+        
+        self.vehicle_list_rows = {}
+        self.list_title.configure(text="VEHICULOS DETECTADOS (0)")
+    
+    def _on_vehicle_selected(self, vehicle_id):
+        """
+        Maneja la seleccion de un vehiculo de la lista.
+        
+        Args:
+            vehicle_id (int): ID del vehiculo seleccionado
+        """
+        print(f"[APP-UI] Vehiculo seleccionado: #{vehicle_id}")
+        
+        # Desseleccionar anterior
+        if self.selected_vehicle_id is not None:
+            if self.selected_vehicle_id in self.vehicle_list_rows:
+                self.vehicle_list_rows[self.selected_vehicle_id].set_selected(False)
+        
+        # Seleccionar nuevo
+        self.selected_vehicle_id = vehicle_id
+        if vehicle_id in self.vehicle_list_rows:
+            self.vehicle_list_rows[vehicle_id].set_selected(True)
+        
+        # Mostrar detalle
+        self._show_vehicle_detail(vehicle_id)
+        
+        # Redibujar imagen con bbox resaltado SOLO en modo imagen
+        # En modo video, la imagen se actualiza constantemente durante reproduccion
+        if self.current_mode == 'image' and self.current_detections and self.current_image_original is not None:
+            self._redraw_image_with_highlight(vehicle_id)
+    
+    def _show_vehicle_detail(self, vehicle_id):
+        """
+        Muestra el detalle de un vehiculo en el panel inferior.
+        
+        Args:
+            vehicle_id (int): ID del vehiculo
+        """
+        # Limpiar panel
+        for widget in self.detail_frame.winfo_children():
+            widget.destroy()
+        
+        # Buscar vehiculo
+        vehicle = None
+        if self.current_mode == 'video':
+            vehicle = self.video_vehicles_summary.get(vehicle_id)
+        elif self.current_mode in ['image', 'camera']:
+            # Buscar en detecciones actuales
+            for det in self.current_detections:
+                if det['id'] == vehicle_id:
+                    vehicle = det
+                    break
+        
+        if not vehicle:
+            return
+        
+        # Actualizar titulo
+        self.detail_title.configure(text=f"DETALLE VEHICULO #{vehicle_id}")
+        
+        # Crear grid de detalles
+        details_grid = ctk.CTkFrame(self.detail_frame, fg_color="transparent")
+        details_grid.pack(fill="both", expand=True, pady=5)
+        
+        row = 0
+        
+        # Placa
+        ctk.CTkLabel(
+            details_grid,
+            text="Placa:",
+            font=("Arial", 11, "bold"),
+            anchor="e",
+            width=100
+        ).grid(row=row, column=0, sticky="e", padx=5, pady=3)
+        
+        plate = vehicle.get('plate', vehicle.get('Numero-Placa', '------'))
+        ctk.CTkLabel(
+            details_grid,
+            text=plate,
+            font=("Consolas", 11),
+            anchor="w"
+        ).grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        row += 1
+        
+        # Marca
+        ctk.CTkLabel(
+            details_grid,
+            text="Marca:",
+            font=("Arial", 11, "bold"),
+            anchor="e",
+            width=100
+        ).grid(row=row, column=0, sticky="e", padx=5, pady=3)
+        
+        ctk.CTkLabel(
+            details_grid,
+            text=vehicle.get('brand', 'DESCONOCIDA'),
+            font=("Arial", 11),
+            anchor="w"
+        ).grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        row += 1
+        
+        # Color
+        ctk.CTkLabel(
+            details_grid,
+            text="Color:",
+            font=("Arial", 11, "bold"),
+            anchor="e",
+            width=100
+        ).grid(row=row, column=0, sticky="e", padx=5, pady=3)
+        
+        ctk.CTkLabel(
+            details_grid,
+            text=vehicle.get('color', 'DESCONOCIDO'),
+            font=("Arial", 11),
+            anchor="w"
+        ).grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        row += 1
+        
+        # Tipo
+        ctk.CTkLabel(
+            details_grid,
+            text="Tipo:",
+            font=("Arial", 11, "bold"),
+            anchor="e",
+            width=100
+        ).grid(row=row, column=0, sticky="e", padx=5, pady=3)
+        
+        ctk.CTkLabel(
+            details_grid,
+            text=vehicle.get('class', 'car'),
+            font=("Arial", 11),
+            anchor="w"
+        ).grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        row += 1
+        
+        # Confianza
+        ctk.CTkLabel(
+            details_grid,
+            text="Confianza:",
+            font=("Arial", 11, "bold"),
+            anchor="e",
+            width=100
+        ).grid(row=row, column=0, sticky="e", padx=5, pady=3)
+        
+        conf = vehicle.get('confidence', 0.0)
+        ctk.CTkLabel(
+            details_grid,
+            text=f"{conf:.2f}",
+            font=("Arial", 11),
+            anchor="w"
+        ).grid(row=row, column=1, sticky="w", padx=5, pady=3)
+        row += 1
+        
+        # Tiempo en video (solo si es video)
+        if self.current_mode == 'video' and 'first_frame' in vehicle:
+            # Separador
+            ctk.CTkFrame(
+                details_grid,
+                height=1,
+                fg_color="gray"
+            ).grid(row=row, column=0, columnspan=2, sticky="ew", padx=5, pady=10)
+            row += 1
             
-            # Listar todos los vehiculos
-            for track_id, vehicle in sorted(self.video_vehicles_summary.items()):
-                info += f"VEHICULO ID #{vehicle['id']}\n"
-                info += f"{'-'*25}\n"
-                info += f"Placa: {vehicle['plate']}\n"
-                info += f"Marca: {vehicle['brand']}\n"
-                info += f"Color: {vehicle['color']}\n"
-                info += f"Tipo: {vehicle['class']}\n\n"
+            ctk.CTkLabel(
+                details_grid,
+                text="Tiempo en video:",
+                font=("Arial", 11, "bold"),
+                anchor="w"
+            ).grid(row=row, column=0, columnspan=2, sticky="w", padx=5, pady=(5, 3))
+            row += 1
             
-            self.info_text.insert("1.0", info)
+            fps = vehicle.get('fps', 30.0)
+            time_start = self._frames_to_time(vehicle['first_frame'], fps)
+            time_end = self._frames_to_time(vehicle['last_frame'], fps)
+            duration_frames = vehicle['last_frame'] - vehicle['first_frame']
+            duration_seconds = duration_frames / fps
             
-            print(f"[APP-VIDEO] Resumen mostrado: {num_vehicles} vehiculos unicos")
+            # Entrada
+            ctk.CTkLabel(
+                details_grid,
+                text="  Entrada:",
+                font=("Arial", 10),
+                anchor="e",
+                width=100
+            ).grid(row=row, column=0, sticky="e", padx=5, pady=2)
             
-        except Exception as e:
-            print(f"[APP-WARNING] Error mostrando resumen de video: {str(e)}")
+            ctk.CTkLabel(
+                details_grid,
+                text=time_start,
+                font=("Consolas", 10),
+                anchor="w"
+            ).grid(row=row, column=1, sticky="w", padx=5, pady=2)
+            row += 1
+            
+            # Salida
+            ctk.CTkLabel(
+                details_grid,
+                text="  Salida:",
+                font=("Arial", 10),
+                anchor="e",
+                width=100
+            ).grid(row=row, column=0, sticky="e", padx=5, pady=2)
+            
+            ctk.CTkLabel(
+                details_grid,
+                text=time_end,
+                font=("Consolas", 10),
+                anchor="w"
+            ).grid(row=row, column=1, sticky="w", padx=5, pady=2)
+            row += 1
+            
+            # Duracion
+            ctk.CTkLabel(
+                details_grid,
+                text="  Duracion:",
+                font=("Arial", 10),
+                anchor="e",
+                width=100
+            ).grid(row=row, column=0, sticky="e", padx=5, pady=2)
+            
+            ctk.CTkLabel(
+                details_grid,
+                text=f"{duration_seconds:.1f} seg",
+                font=("Consolas", 10),
+                anchor="w"
+            ).grid(row=row, column=1, sticky="w", padx=5, pady=2)
+    
+    def _clear_detail_panel(self):
+        """
+        Limpia el panel de detalle.
+        """
+        for widget in self.detail_frame.winfo_children():
+            widget.destroy()
+        
+        self.detail_title.configure(text="DETALLE VEHICULO")
+        
+        self.detail_empty_label = ctk.CTkLabel(
+            self.detail_frame,
+            text="Seleccione un vehiculo\npara ver detalles",
+            font=("Arial", 11),
+            text_color="gray"
+        )
+        self.detail_empty_label.pack(expand=True)
+    
+    def _on_canvas_click(self, event):
+        """
+        Maneja el click en el canvas.
+        
+        Args:
+            event: Evento de click
+        """
+        if not self.current_detections or self.current_image_original is None:
+            return
+        
+        # Obtener coordenadas del click
+        click_x = event.x
+        click_y = event.y
+        
+        # Convertir a coordenadas de imagen original
+        display_w, display_h = self.current_image_display_size
+        if display_w == 0 or display_h == 0:
+            return
+        
+        orig_h, orig_w = self.current_image_original.shape[:2]
+        
+        scale_x = orig_w / display_w
+        scale_y = orig_h / display_h
+        
+        orig_x = click_x * scale_x
+        orig_y = click_y * scale_y
+        
+        # Buscar vehiculo clickeado
+        for det in self.current_detections:
+            x1, y1, x2, y2 = det['bbox']
+            
+            if x1 <= orig_x <= x2 and y1 <= orig_y <= y2:
+                print(f"[APP-UI] Click en vehiculo #{det['id']}")
+                self._on_vehicle_selected(det['id'])
+                return
+    
+    def _draw_bboxes_on_image(self, image, detections, highlight_id=None):
+        """
+        Dibuja los bounding boxes sobre una imagen.
+        
+        Args:
+            image: Imagen base (numpy array BGR)
+            detections: Lista de detecciones
+            highlight_id: ID del vehiculo a resaltar (None = ninguno)
+            
+        Returns:
+            Imagen con bboxes dibujados
+        """
+        output = image.copy()
+        
+        for det in detections:
+            x1, y1, x2, y2 = det['bbox']
+            
+            if det['id'] == highlight_id:
+                # Resaltado: amarillo grueso
+                cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 255), 4)
+                cv2.putText(
+                    output,
+                    f"ID: {det['id']}",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 255),
+                    2
+                )
+            else:
+                # Normal: verde
+                cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    output,
+                    f"ID: {det['id']}",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    1
+                )
+        
+        return output
+    
+    def _redraw_image_with_highlight(self, vehicle_id):
+        """
+        Redibuja la imagen con el vehiculo seleccionado resaltado.
+        
+        Args:
+            vehicle_id (int): ID del vehiculo a resaltar
+        """
+        if self.current_image_original is None or not self.current_detections:
+            return
+        
+        # Dibujar bboxes con resaltado
+        image_with_bboxes = self._draw_bboxes_on_image(
+            self.current_image_original,
+            self.current_detections,
+            highlight_id=vehicle_id
+        )
+        
+        # Mostrar (sin guardar como original)
+        self._display_image(image_with_bboxes, save_as_original=False)
     
     def _toggle_camera(self):
         """
@@ -585,11 +1076,18 @@ class VehicleDetectorApp:
         """
         if not self.camera_active:
             print("\n[APP-CAMERA] Activando camara...")
-            
+
             # Cambiar modo a camara
             self.current_mode = 'camera'
             self._update_stats_mode_label()
-            
+
+            # Limpiar estado previo para no mostrar lista/detalle de imagen/video
+            self.selected_vehicle_id = None
+            self.current_detections = []
+            self.current_image_original = None
+            self._clear_vehicle_list()
+            self._clear_detail_panel()
+
             # Reset pipeline Y cambiar a modo camara
             if self.pipeline:
                 self.pipeline.reset()
@@ -630,14 +1128,25 @@ class VehicleDetectorApp:
                 try:
                     if self.pipeline:
                         result = self.pipeline.process_video_frame(frame)
+                        # Guardar detecciones actuales para lista/detalle
+                        self.current_detections = result.get('detections', [])
+                        self.current_image_original = frame.copy()
+
                         self._display_image(result['annotated_image'])
-                        self._update_info_text(result['detections'])
-                        
+
                         # Actualizar stats cada 30 frames
                         self.frame_counter += 1
                         if self.frame_counter >= self.stats_update_interval:
                             self._update_stats()
                             self.frame_counter = 0
+
+                        # Refrescar lista de vehiculos cada vez que se actualizan stats
+                        if self.frame_counter == 0:
+                            self._populate_vehicle_list_from_detections(self.current_detections)
+                            # Mantener seleccion si sigue presente
+                            if (self.selected_vehicle_id is not None and
+                                any(det['id'] == self.selected_vehicle_id for det in self.current_detections)):
+                                self._on_vehicle_selected(self.selected_vehicle_id)
                     else:
                         self._display_image(frame)
                 except Exception as e:
@@ -679,8 +1188,24 @@ class VehicleDetectorApp:
             
             result = self.pipeline.process_image(self.current_image)
             
-            self._display_image(result['annotated_image'])
-            self._update_info_text(result['detections'])
+            # Guardar detecciones
+            self.current_detections = result['detections']
+            
+            # Guardar imagen SIN bboxes para permitir redibujo
+            self.current_image_original = self.current_image.copy()
+            
+            # Dibujar bboxes sobre imagen original (sin highlight inicial)
+            image_with_bboxes = self._draw_bboxes_on_image(
+                self.current_image_original,
+                self.current_detections,
+                highlight_id=None
+            )
+            
+            # Mostrar imagen CON bboxes dibujados
+            self._display_image(image_with_bboxes, save_as_original=False)
+            
+            # Poblar lista de vehiculos
+            self._populate_vehicle_list_from_detections(result['detections'])
             
             num_detections = len(result['detections'])
             print(f"[APP-PROCESS] Procesamiento completado - {num_detections} vehiculos detectados\n")
@@ -694,75 +1219,94 @@ class VehicleDetectorApp:
             print(f"[APP-ERROR] Error en procesamiento:\n{error_msg}")
             self.status_label.configure(text=f"Error: {str(e)}")
     
-    def _display_image(self, image):
+    def _populate_vehicle_list_from_detections(self, detections):
+        """
+        Puebla la lista de vehiculos desde detecciones de imagen.
+        
+        Args:
+            detections (list): Lista de detecciones
+        """
+        self._clear_vehicle_list()
+        
+        if not detections:
+            return
+        
+        # Ordenar por ID
+        sorted_detections = sorted(detections, key=lambda x: x['id'])
+        
+        # Actualizar titulo
+        self.list_title.configure(text=f"VEHICULOS DETECTADOS ({len(sorted_detections)})")
+        
+        # Crear filas
+        for idx, det in enumerate(sorted_detections):
+            vehicle_data = {
+                'id': det['id'],
+                'plate': det.get('Numero-Placa', '------'),
+                'time_range': 'N/A',  # No aplica en imagen
+                **det
+            }
+            
+            # Crear fila
+            row = VehicleListRow(
+                self.vehicle_list_frame,
+                vehicle_data,
+                self._on_vehicle_selected,
+                is_odd=(idx % 2 == 1)
+            )
+            row.pack(fill="x", pady=0)
+            
+            self.vehicle_list_rows[det['id']] = row
+    
+    def _display_image(self, image, save_as_original=False):
         """
         Muestra una imagen en el canvas.
+        
+        Args:
+            image: Imagen en formato numpy array (BGR)
+            save_as_original: Si True, guarda esta imagen como original (sin bboxes)
         """
         try:
+            # Guardar imagen original solo si se solicita explicitamente
+            if save_as_original:
+                self.current_image_original = image.copy()
+            
             # Convertir BGR a RGB
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
             # Redimensionar manteniendo aspect ratio
-            max_width = 900
-            max_height = 700
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            if canvas_width <= 1 or canvas_height <= 1:
+                canvas_width = 800
+                canvas_height = 600
+            
             h, w = image_rgb.shape[:2]
             
-            scale = min(max_width/w, max_height/h)
+            scale = min(canvas_width/w, canvas_height/h)
             new_w = int(w * scale)
             new_h = int(h * scale)
             
+            # Guardar tamano mostrado
+            self.current_image_display_size = (new_w, new_h)
+            
             image_resized = cv2.resize(image_rgb, (new_w, new_h))
             
-            # Convertir a formato PIL
+            # Convertir a formato PIL luego a PhotoImage
             pil_image = Image.fromarray(image_resized)
+            self.photo_image = ImageTk.PhotoImage(pil_image)
             
-            # Usar CTkImage
-            ctk_image = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, 
-                                      size=(new_w, new_h))
+            # Limpiar canvas
+            self.canvas.delete("all")
             
-            # Actualizar canvas
-            self.canvas.configure(image=ctk_image, text="")
-            self.canvas.image = ctk_image
+            # Centrar imagen en canvas
+            x = (canvas_width - new_w) // 2
+            y = (canvas_height - new_h) // 2
+            
+            self.canvas.create_image(x, y, anchor="nw", image=self.photo_image)
             
         except Exception as e:
             print(f"[APP-WARNING] Error mostrando imagen: {str(e)}")
-    
-    def _update_info_text(self, detections):
-        """
-        Actualiza el area de texto con informacion de detecciones.
-        Para camara/imagen: muestra frame actual.
-        Para video: el resumen se muestra al final con _display_video_summary()
-        """
-        try:
-            self.info_text.delete("1.0", "end")
-            
-            if not detections:
-                self.info_text.insert("1.0", "No se detectaron vehiculos")
-                return
-            
-            # Contar vehiculos con placas legibles
-            vehicles_with_plates = sum(1 for det in detections if det['Placa'] == 'SI')
-            
-            info = f"Vehiculos detectados: {len(detections)}\n"
-            info += f"Placas legibles: {vehicles_with_plates}\n\n"
-            
-            for det in detections:
-                info += f"{'='*25}\n"
-                info += f"VEHICULO #{det['id']}\n"
-                info += f"{'='*25}\n"
-                info += f"Tipo: {det['class']}\n"
-                info += f"Confianza: {det['confidence']:.2f}\n\n"
-                
-                info += f"Placa: {det['Placa']}\n"
-                info += f"Numero-Placa: {det['Numero-Placa']}\n\n"
-                
-                info += f"Color: {det['color']}\n"
-                info += f"Marca: {det['brand']}\n\n"
-            
-            self.info_text.insert("1.0", info)
-            
-        except Exception as e:
-            print(f"[APP-WARNING] Error actualizando info text: {str(e)}")
     
     def _update_stats_mode_label(self):
         """
@@ -786,7 +1330,6 @@ class VehicleDetectorApp:
         self.stats_labels['last_entry_time'].configure(text="")
         self.stats_labels['last_exit_plate'].configure(text="---")
         self.stats_labels['last_exit_time'].configure(text="")
-        self.stats_labels['avg_duration'].configure(text="---")
     
     def _update_stats_from_dict(self, stats):
         """
@@ -806,13 +1349,12 @@ class VehicleDetectorApp:
                 entry_time = stats['last_entry'].get('timestamp')
                 
                 if entry_time:
-                    # Calcular "hace X min"
                     now = datetime.now()
                     diff = now - entry_time
                     minutes_ago = int(diff.total_seconds() / 60)
                     
                     if minutes_ago < 1:
-                        time_str = "hace menos de 1 min"
+                        time_str = "hace <1 min"
                     elif minutes_ago < 60:
                         time_str = f"hace {minutes_ago} min"
                     else:
@@ -821,9 +1363,8 @@ class VehicleDetectorApp:
                 else:
                     time_str = ""
                 
-                # Truncar placa si es muy larga
-                if len(plate) > 20:
-                    plate = plate[:17] + "..."
+                if len(plate) > 15:
+                    plate = plate[:13] + ".."
                 
                 self.stats_labels['last_entry_plate'].configure(text=plate)
                 self.stats_labels['last_entry_time'].configure(text=time_str)
@@ -837,13 +1378,12 @@ class VehicleDetectorApp:
                 exit_time = stats['last_exit'].get('timestamp')
                 
                 if exit_time:
-                    # Calcular "hace X min"
                     now = datetime.now()
                     diff = now - exit_time
                     minutes_ago = int(diff.total_seconds() / 60)
                     
                     if minutes_ago < 1:
-                        time_str = "hace menos de 1 min"
+                        time_str = "hace <1 min"
                     elif minutes_ago < 60:
                         time_str = f"hace {minutes_ago} min"
                     else:
@@ -852,18 +1392,14 @@ class VehicleDetectorApp:
                 else:
                     time_str = ""
                 
-                # Truncar placa si es muy larga
-                if len(plate) > 20:
-                    plate = plate[:17] + "..."
+                if len(plate) > 15:
+                    plate = plate[:13] + ".."
                 
                 self.stats_labels['last_exit_plate'].configure(text=plate)
                 self.stats_labels['last_exit_time'].configure(text=time_str)
             else:
                 self.stats_labels['last_exit_plate'].configure(text="---")
                 self.stats_labels['last_exit_time'].configure(text="")
-            
-            # Duracion promedio no disponible en modo video
-            self.stats_labels['avg_duration'].configure(text="N/A")
             
         except Exception as e:
             print(f"[APP-WARNING] Error actualizando stats desde dict: {str(e)}")
@@ -899,22 +1435,20 @@ class VehicleDetectorApp:
                     plate = stats['last_entry']['plate']
                     entry_time = datetime.fromisoformat(stats['last_entry']['entry_time'])
                     
-                    # Calcular "hace X min"
                     now = datetime.now()
                     diff = now - entry_time
                     minutes_ago = int(diff.total_seconds() / 60)
                     
                     if minutes_ago < 1:
-                        time_str = "hace menos de 1 min"
+                        time_str = "hace <1 min"
                     elif minutes_ago < 60:
                         time_str = f"hace {minutes_ago} min"
                     else:
                         hours = minutes_ago // 60
                         time_str = f"hace {hours}h {minutes_ago % 60}min"
                     
-                    # Truncar placa si es muy larga
-                    if len(plate) > 20:
-                        plate = plate[:17] + "..."
+                    if len(plate) > 15:
+                        plate = plate[:13] + ".."
                     
                     self.stats_labels['last_entry_plate'].configure(text=plate)
                     self.stats_labels['last_entry_time'].configure(text=time_str)
@@ -927,31 +1461,26 @@ class VehicleDetectorApp:
                     plate = stats['last_exit']['plate']
                     exit_time = datetime.fromisoformat(stats['last_exit']['exit_time'])
                     
-                    # Calcular "hace X min"
                     now = datetime.now()
                     diff = now - exit_time
                     minutes_ago = int(diff.total_seconds() / 60)
                     
                     if minutes_ago < 1:
-                        time_str = "hace menos de 1 min"
+                        time_str = "hace <1 min"
                     elif minutes_ago < 60:
                         time_str = f"hace {minutes_ago} min"
                     else:
                         hours = minutes_ago // 60
                         time_str = f"hace {hours}h {minutes_ago % 60}min"
                     
-                    # Truncar placa si es muy larga
-                    if len(plate) > 20:
-                        plate = plate[:17] + "..."
+                    if len(plate) > 15:
+                        plate = plate[:13] + ".."
                     
                     self.stats_labels['last_exit_plate'].configure(text=plate)
                     self.stats_labels['last_exit_time'].configure(text=time_str)
                 else:
                     self.stats_labels['last_exit_plate'].configure(text="---")
                     self.stats_labels['last_exit_time'].configure(text="")
-                
-                # Duracion promedio
-                self.stats_labels['avg_duration'].configure(text=f"{stats['avg_duration']} min")
             
             # Modo IMAGEN o SIN MODO: Limpiar
             else:
