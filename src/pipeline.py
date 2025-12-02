@@ -90,6 +90,9 @@ class VehicleDetectionPipeline:
         print(f"[PIPELINE-INIT] Modo: {mode}, Intervalo re-deteccion: {self.redetection_interval} frames")
         self.known_vehicles = {}  # track_id -> vehicle_info (cache)
         
+        # Mapeo placa -> track_id para re-identificacion
+        self.plate_to_track = {}  # plate -> track_id (para vincular tracks por placa)
+        
         # Estadisticas temporales para modo video
         self._video_stats = {
             'inside': 0,  # Contador de vehiculos dentro
@@ -122,6 +125,7 @@ class VehicleDetectionPipeline:
         # Reset estado
         self.frame_count = 0
         self.known_vehicles = {}
+        self.plate_to_track = {}
         
         # Reset estadisticas temporales de video
         self._video_stats = {
@@ -185,6 +189,58 @@ class VehicleDetectionPipeline:
                 'plate': vehicle_data.get('plate', 'DESCONOCIDA'),
                 'timestamp': event['timestamp']
             }
+    
+    def _recover_vehicle_from_db(self, plate):
+        """
+        Recupera los atributos originales de un vehiculo desde la BD.
+        Usado para re-identificacion por placa.
+        
+        Args:
+            plate (str): Numero de placa
+            
+        Returns:
+            dict or None: Datos del vehiculo si existe en active_vehicles
+        """
+        if not self.enable_database or not self.db:
+            return None
+        
+        try:
+            active = self.db.find_active_by_plate(plate)
+            if active:
+                return {
+                    'plate': active['plate'],
+                    'brand': active['brand'],
+                    'color': active['color'],
+                    'from_db': True
+                }
+        except Exception as e:
+            print(f"[PIPELINE-WARNING] Error recuperando vehiculo de BD: {str(e)}")
+        
+        return None
+    
+    def _recover_vehicle_from_cache(self, plate):
+        """
+        Recupera los atributos de un vehiculo desde el cache por placa.
+        Usado cuando el mismo vehiculo obtiene un nuevo track_id.
+        
+        Args:
+            plate (str): Numero de placa
+            
+        Returns:
+            dict or None: Datos del vehiculo si existe en cache
+        """
+        if plate in self.plate_to_track:
+            old_track_id = self.plate_to_track[plate]
+            if old_track_id in self.known_vehicles:
+                old_data = self.known_vehicles[old_track_id]
+                return {
+                    'plate': old_data.get('plate', plate),
+                    'brand': old_data.get('brand', 'DESCONOCIDA'),
+                    'color': old_data.get('color', 'DESCONOCIDO'),
+                    'from_cache': True,
+                    'old_track_id': old_track_id
+                }
+        return None
     
     def process_image(self, image):
         """
@@ -340,24 +396,63 @@ class VehicleDetectionPipeline:
                         
                         # Generar placa final (con ID temporal si no tiene placa)
                         plate_text = plate_info['text']
-                        if plate_text in ["SIN PLACA", "NO DETECTADA"]:
-                            # Generar ID temporal
-                            temp_prefix = getattr(config, 'TEMP_PLATE_PREFIX', 'TEMP_')
-                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            plate_text = f"{temp_prefix}{timestamp}_{track_id}"
-                            print(f"[PIPELINE-VIDEO] Placa no legible, usando ID temporal: {plate_text}")
+                        temp_prefix = getattr(config, 'TEMP_PLATE_PREFIX', 'TEMP_')
                         
-                        # Guardar bbox de placa y logo
-                        vehicle_data = {
-                            'plate': plate_text,
-                            'plate_bbox': [int(x) for x in plate_info['bbox']] if plate_info['bbox'] else None,
-                            'brand': classification['brand'],
-                            'brand_bbox': [int(x) for x in classification['brand_bbox']] if classification['brand_bbox'] else None,
-                            'color': classification['color'],
-                            'last_redetection_frame': self.frame_count
-                        }
+                        # Verificar si es placa real (no temporal)
+                        is_real_plate = plate_text not in ["SIN PLACA", "NO DETECTADA"]
+                        
+                        # NUEVO: Intentar recuperar datos existentes por placa
+                        recovered_data = None
+                        if is_real_plate:
+                            # Primero intentar desde cache (mismo video/sesion)
+                            recovered_data = self._recover_vehicle_from_cache(plate_text)
+                            
+                            # Si no esta en cache, intentar desde BD (modo camara)
+                            if not recovered_data and self.mode == 'camera':
+                                recovered_data = self._recover_vehicle_from_db(plate_text)
+                        
+                        if recovered_data:
+                            # Usar datos recuperados (mantener atributos originales)
+                            print(f"[PIPELINE-VIDEO] Re-identificado vehiculo por placa: {plate_text}")
+                            if recovered_data.get('from_db'):
+                                print(f"[PIPELINE-VIDEO]   -> Recuperado de BD")
+                            elif recovered_data.get('from_cache'):
+                                print(f"[PIPELINE-VIDEO]   -> Recuperado de cache (track anterior: {recovered_data.get('old_track_id')})")
+                            
+                            vehicle_data = {
+                                'plate': recovered_data['plate'],
+                                'plate_bbox': [int(x) for x in plate_info['bbox']] if plate_info['bbox'] else None,
+                                'brand': recovered_data['brand'],
+                                'brand_bbox': [int(x) for x in classification['brand_bbox']] if classification['brand_bbox'] else None,
+                                'color': recovered_data['color'],
+                                'last_redetection_frame': self.frame_count,
+                                'reidentified': True
+                            }
+                            
+                            print(f"[PIPELINE-VIDEO]   -> Marca: {vehicle_data['brand']}, Color: {vehicle_data['color']}")
+                        else:
+                            # Vehiculo completamente nuevo
+                            if not is_real_plate:
+                                # Generar ID temporal
+                                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                plate_text = f"{temp_prefix}{timestamp}_{track_id}"
+                                print(f"[PIPELINE-VIDEO] Placa no legible, usando ID temporal: {plate_text}")
+                            
+                            vehicle_data = {
+                                'plate': plate_text,
+                                'plate_bbox': [int(x) for x in plate_info['bbox']] if plate_info['bbox'] else None,
+                                'brand': classification['brand'],
+                                'brand_bbox': [int(x) for x in classification['brand_bbox']] if classification['brand_bbox'] else None,
+                                'color': classification['color'],
+                                'last_redetection_frame': self.frame_count,
+                                'reidentified': False
+                            }
                         
                         self.known_vehicles[track_id] = vehicle_data
+                        
+                        # Actualizar mapeo placa -> track_id
+                        if is_real_plate or recovered_data:
+                            self.plate_to_track[vehicle_data['plate']] = track_id
                     
                     else:
                         # Vehiculo existente - Re-detectar bbox cada N frames o si falta info
@@ -381,15 +476,31 @@ class VehicleDetectionPipeline:
                             if plate_info['bbox'] is not None:
                                 vehicle_data['plate_bbox'] = [int(x) for x in plate_info['bbox']]
                                 
-                                # NUEVO: Actualizar texto de placa si se detecto una real
+                                # Actualizar texto de placa si se detecto una real
                                 plate_text = plate_info['text']
                                 temp_prefix = getattr(config, 'TEMP_PLATE_PREFIX', 'TEMP_')
                                 
                                 # Si placa actual es temporal Y se detecto una real, actualizar
                                 if (vehicle_data['plate'].startswith(temp_prefix) and 
                                     plate_text not in ["SIN PLACA", "NO DETECTADA"]):
-                                    vehicle_data['plate'] = plate_text
-                                    print(f"[PIPELINE-VIDEO] Placa real detectada para track {track_id}: {plate_text}")
+                                    
+                                    # Verificar si esta placa ya existe (re-identificacion)
+                                    recovered = self._recover_vehicle_from_cache(plate_text)
+                                    if not recovered and self.mode == 'camera':
+                                        recovered = self._recover_vehicle_from_db(plate_text)
+                                    
+                                    if recovered:
+                                        # Actualizar con datos recuperados
+                                        vehicle_data['plate'] = recovered['plate']
+                                        vehicle_data['brand'] = recovered['brand']
+                                        vehicle_data['color'] = recovered['color']
+                                        vehicle_data['reidentified'] = True
+                                        print(f"[PIPELINE-VIDEO] Placa real detectada y re-identificada para track {track_id}: {plate_text}")
+                                    else:
+                                        # Solo actualizar placa, mantener marca/color actuales
+                                        vehicle_data['plate'] = plate_text
+                                        self.plate_to_track[plate_text] = track_id
+                                        print(f"[PIPELINE-VIDEO] Placa real detectada para track {track_id}: {plate_text}")
                             
                             if classification['brand_bbox'] is not None:
                                 vehicle_data['brand_bbox'] = [int(x) for x in classification['brand_bbox']]
@@ -438,6 +549,12 @@ class VehicleDetectionPipeline:
                                         # Ya esta dentro, actualizar track_id
                                         print(f"[PARKING] {plate} ya registrado dentro, actualizando track_id")
                                         self.db.update_active_track_id(plate, track_id)
+                                        
+                                        # NUEVO: Recuperar atributos de BD y actualizar cache local
+                                        vehicle_data['brand'] = existing['brand']
+                                        vehicle_data['color'] = existing['color']
+                                        vehicle_data['reidentified'] = True
+                                        print(f"[PARKING]   -> Recuperados atributos originales: {existing['brand']}, {existing['color']}")
                                     else:
                                         # Registrar nueva entrada
                                         self.db.register_entry(

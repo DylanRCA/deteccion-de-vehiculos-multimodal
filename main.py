@@ -42,7 +42,7 @@ class VehicleListRow(ctk.CTkFrame):
         id_label = ctk.CTkLabel(
             self,
             text=f"#{vehicle_data['id']:02d}",
-            font=("Arial", 12, "bold"),
+            font=("Arial", 13, "bold"),
             text_color="#4CAF50",
             width=40
         )
@@ -57,7 +57,7 @@ class VehicleListRow(ctk.CTkFrame):
         plate_label = ctk.CTkLabel(
             self,
             text=plate,
-            font=("Consolas", 11),
+            font=("Consolas", 12),
             text_color="white"
         )
         plate_label.grid(row=0, column=1, padx=5, pady=6, sticky="w")
@@ -75,7 +75,7 @@ class VehicleListRow(ctk.CTkFrame):
             extra_label = ctk.CTkLabel(
                 self,
                 text=extra_info,
-                font=("Arial", 9),
+                font=("Arial", 10),
                 text_color="#AAAAAA"
             )
             extra_label.grid(row=0, column=2, padx=(5, 8), pady=6, sticky="e")
@@ -115,7 +115,7 @@ class VehicleDetectorApp:
         print("="*80 + "\n")
         
         self.root = ctk.CTk()
-        self.root.title("Detector de Vehiculos - Peru")
+        self.root.title("Detector de Vehiculos")
         self.root.geometry("1400x800")
         
         # Configurar tema
@@ -282,7 +282,7 @@ class VehicleDetectorApp:
         title_label = ctk.CTkLabel(
             control_frame,
             text="Detector de Vehiculos",
-            font=("Arial", 16, "bold")
+            font=("Arial", 18, "bold")
         )
         title_label.pack(pady=15)
         
@@ -311,7 +311,7 @@ class VehicleDetectorApp:
         camera_label = ctk.CTkLabel(
             camera_section,
             text="Camara:",
-            font=("Arial", 11)
+            font=("Arial", 12)
         )
         camera_label.pack(anchor="w")
         
@@ -393,7 +393,7 @@ class VehicleDetectorApp:
         self.progress = ctk.CTkProgressBar(control_frame, width=180)
         self.progress.set(0)
         self.progress.pack(pady=10, padx=15)
-        self.progress_label = ctk.CTkLabel(control_frame, text="", font=("Arial", 9))
+        self.progress_label = ctk.CTkLabel(control_frame, text="", font=("Arial", 10))
         self.progress_label.pack(pady=(0, 10))
         
         # Separador
@@ -403,14 +403,14 @@ class VehicleDetectorApp:
         stats_title = ctk.CTkLabel(
             control_frame,
             text="ESTADISTICAS",
-            font=("Arial", 12, "bold")
+            font=("Arial", 16, "bold")
         )
         stats_title.pack(pady=(10, 5))
         
         self.stats_mode_label = ctk.CTkLabel(
             control_frame,
             text="",
-            font=("Arial", 9),
+            font=("Arial", 10),
             text_color="gray"
         )
         self.stats_mode_label.pack(pady=(0, 5))
@@ -424,7 +424,7 @@ class VehicleDetectorApp:
         self.stats_labels['inside'] = ctk.CTkLabel(
             stats_container,
             text="DENTRO: 0",
-            font=("Arial", 11, "bold"),
+            font=("Arial", 15, "bold"),
             text_color="#4CAF50"
         )
         self.stats_labels['inside'].pack(anchor="w", pady=2)
@@ -432,14 +432,14 @@ class VehicleDetectorApp:
         self.stats_labels['entries'] = ctk.CTkLabel(
             stats_container,
             text="ENTRADAS: 0",
-            font=("Arial", 10)
+            font=("Arial", 14)
         )
         self.stats_labels['entries'].pack(anchor="w", pady=1)
         
         self.stats_labels['exits'] = ctk.CTkLabel(
             stats_container,
             text="SALIDAS: 0",
-            font=("Arial", 10)
+            font=("Arial", 14)
         )
         self.stats_labels['exits'].pack(anchor="w", pady=1)
         
@@ -447,7 +447,7 @@ class VehicleDetectorApp:
         self.status_label = ctk.CTkLabel(
             control_frame,
             text="Inicializando...",
-            font=("Arial", 9),
+            font=("Arial", 11),
             wraplength=200
         )
         self.status_label.pack(side="bottom", pady=10)
@@ -483,7 +483,7 @@ class VehicleDetectorApp:
         self.list_title = ctk.CTkLabel(
             list_title_frame,
             text="VEHICULOS DETECTADOS",
-            font=("Arial", 12, "bold"),
+            font=("Arial", 16, "bold"),
             text_color="#4CAF50"
         )
         self.list_title.pack(pady=10)
@@ -492,7 +492,7 @@ class VehicleDetectorApp:
         self.list_subtitle = ctk.CTkLabel(
             right_frame,
             text="Click para ver detalle",
-            font=("Arial", 9),
+            font=("Arial", 10),
             text_color="gray"
         )
         self.list_subtitle.pack(pady=(0, 5))
@@ -511,7 +511,7 @@ class VehicleDetectorApp:
         detail_title = ctk.CTkLabel(
             right_frame,
             text="DETALLE",
-            font=("Arial", 11, "bold")
+            font=("Arial", 13, "bold")
         )
         detail_title.pack(pady=(5, 5))
         
@@ -535,7 +535,7 @@ class VehicleDetectorApp:
         self.detail_placeholder = ctk.CTkLabel(
             self.detail_frame,
             text="Seleccione un vehiculo",
-            font=("Arial", 10),
+            font=("Arial", 11),
             text_color="gray"
         )
         self.detail_placeholder.pack(expand=True)
@@ -576,14 +576,14 @@ class VehicleDetectorApp:
             ctk.CTkLabel(
                 container,
                 text=label,
-                font=("Arial", 10, "bold"),
+                font=("Arial", 11, "bold"),
                 text_color="#888888"
             ).grid(row=i, column=0, sticky="e", padx=(0, 5), pady=2)
             
             ctk.CTkLabel(
                 container,
                 text=value,
-                font=("Arial", 10),
+                font=("Arial", 11),
                 text_color="white"
             ).grid(row=i, column=1, sticky="w", pady=2)
     

@@ -2,6 +2,11 @@ import os
 from ultralytics import YOLO
 import cv2
 
+try:
+    import config
+except ImportError:
+    config = None
+
 
 class CarDetector:
     def __init__(self, model_path=None, min_confidence=0.4):
@@ -36,10 +41,16 @@ class CarDetector:
         # Clases de vehiculos en COCO dataset
         self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
         
+        # Filtros de tamano (porcentaje del frame) - desde config o defaults
+        self.max_bbox_ratio = getattr(config, 'CAR_MAX_BBOX_RATIO', 0.70)
+        self.min_bbox_ratio = getattr(config, 'CAR_MIN_BBOX_RATIO', 0.001)
+        print(f"[DEBUG] Filtro de tamano: min={self.min_bbox_ratio:.1%}, max={self.max_bbox_ratio:.0%} del frame")
+        
     def detect_vehicles(self, image):
         """
         Detecta vehiculos en una imagen.
         Solo retorna vehiculos con confianza >= min_confidence.
+        Filtra detecciones con tamano anormal (muy grandes o muy pequenas).
         
         Args:
             image: Imagen en formato numpy array (BGR)
@@ -50,6 +61,10 @@ class CarDetector:
         """
         results = self.model(image, verbose=False)
         detections = []
+        
+        # Obtener dimensiones de la imagen para calcular ratios
+        img_height, img_width = image.shape[:2]
+        img_area = img_height * img_width
         
         for result in results:
             boxes = result.boxes
@@ -63,14 +78,39 @@ class CarDetector:
                     continue
                 
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                
+                # Calcular area del bbox
+                bbox_width = x2 - x1
+                bbox_height = y2 - y1
+                bbox_area = bbox_width * bbox_height
+                
+                # Calcular ratio respecto al frame
+                bbox_ratio = bbox_area / img_area if img_area > 0 else 0
+                
+                # Filtrar por tamano maximo (evitar falsos positivos gigantes)
+                if bbox_ratio > self.max_bbox_ratio:
+                    print(f"[DEBUG] Vehiculo rechazado por tamano excesivo: {bbox_ratio:.1%} del frame (max: {self.max_bbox_ratio:.0%})")
+                    continue
+                
+                # Filtrar por tamano minimo (evitar ruido)
+                if bbox_ratio < self.min_bbox_ratio:
+                    print(f"[DEBUG] Vehiculo rechazado por tamano muy pequeno: {bbox_ratio:.3%} del frame")
+                    continue
+                
+                # Filtrar por aspect ratio anomalo (muy ancho o muy alto)
+                aspect_ratio = bbox_width / bbox_height if bbox_height > 0 else 0
+                if aspect_ratio > 6.0 or aspect_ratio < 0.2:
+                    print(f"[DEBUG] Vehiculo rechazado por aspect ratio anomalo: {aspect_ratio:.2f}")
+                    continue
                 
                 detections.append({
-                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                    'bbox': [x1, y1, x2, y2],
                     'confidence': confidence,
                     'class': result.names[class_id]
                 })
                 
-                print(f"[DEBUG] Vehiculo detectado: {result.names[class_id]} con confianza {confidence:.2f}")
+                print(f"[DEBUG] Vehiculo detectado: {result.names[class_id]} con confianza {confidence:.2f} ({bbox_ratio:.1%} del frame)")
         
         return detections
     

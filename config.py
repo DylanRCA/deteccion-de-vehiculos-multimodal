@@ -20,7 +20,14 @@ TRACKING_IOU_THRESHOLD = 0.25  # Antes: 0.3, Ahora: 0.25 (mas estricto)
 # Parametros de deteccion de vehiculos
 
 # Confianza minima para aceptar deteccion de vehiculo (0.0-1.0)
-CAR_MIN_CONFIDENCE = 0.5  # Antes: 0.4, Ahora: 0.5 (reducir detecciones espurias)
+CAR_MIN_CONFIDENCE = 0.4  # Antes: 0.4, Ahora: 0.5 (reducir detecciones espurias)
+
+# Filtros de tamano de bbox (porcentaje del frame)
+# Rechazar detecciones que ocupen mas de este porcentaje del frame
+CAR_MAX_BBOX_RATIO = 0.70  # 70% - evita falsos positivos gigantes
+
+# Rechazar detecciones que ocupen menos de este porcentaje del frame
+CAR_MIN_BBOX_RATIO = 0.001  # 0.1% - evita ruido muy pequeno
 
 
 # ==================== BASE DE DATOS ====================
