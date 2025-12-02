@@ -150,6 +150,9 @@ class VehicleDetectorApp:
         
         # Vehiculos detectados en camara (para modo camara)
         self.camera_vehicles = {}  # track_id -> vehicle_info
+        self.available_cameras = ["0"]  # Indices disponibles detectados
+        self.camera_index_var = ctk.StringVar(value="0")
+        self.scanning_cameras = False
         
         # Detecciones por frame para highlight preciso
         self.detections_per_frame = []  # [frame_idx] -> [detections]
@@ -167,6 +170,9 @@ class VehicleDetectorApp:
         
         # Crear interfaz
         self._create_widgets()
+
+        # Detectar camaras disponibles al iniciar
+        self.root.after(100, self._scan_cameras)
         
         # Inicializar pipeline en thread separado
         threading.Thread(target=self._init_pipeline, daemon=True).start()
@@ -242,6 +248,30 @@ class VehicleDetectorApp:
             height=35
         )
         self.btn_camera.pack(pady=8, padx=15, fill="x")
+
+        camera_selector_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
+        camera_selector_frame.pack(pady=(0, 6), padx=15, fill="x")
+
+        ctk.CTkLabel(
+            camera_selector_frame,
+            text="Camara a usar",
+            font=("Arial", 10)
+        ).pack(anchor="w")
+
+        self.camera_option = ctk.CTkOptionMenu(
+            camera_selector_frame,
+            variable=self.camera_index_var,
+            values=self.available_cameras
+        )
+        self.camera_option.pack(fill="x", pady=(2, 6))
+
+        self.btn_scan_cameras = ctk.CTkButton(
+            control_frame,
+            text="Buscar Camaras",
+            command=self._scan_cameras,
+            height=30
+        )
+        self.btn_scan_cameras.pack(pady=(0, 8), padx=15, fill="x")
         
         self.btn_process = ctk.CTkButton(
             control_frame,
@@ -1128,6 +1158,88 @@ class VehicleDetectorApp:
         self.status_label.configure(text="Reproduciendo video completo...")
         self._play_frames(0, len(self.processed_frames) - 1)
     
+    def _get_selected_camera_index(self):
+        """Obtiene el indice de camara elegido por el usuario."""
+        try:
+            return int(self.camera_index_var.get())
+        except (ValueError, TypeError):
+            return 0
+
+    def _find_available_cameras(self, max_index=5):
+        """Escanea indices bajos en busca de camaras disponibles."""
+        available = []
+        for idx in range(max_index):
+            cap = cv2.VideoCapture(idx)
+            if cap.isOpened():
+                ret, _ = cap.read()
+                if ret:
+                    available.append(idx)
+            cap.release()
+        return available
+
+    def _update_camera_selector(self, camera_values):
+        """Actualiza la lista desplegable de camaras."""
+        if not camera_values:
+            camera_values = ["0"]
+        self.camera_option.configure(values=camera_values)
+        if self.camera_index_var.get() not in camera_values:
+            self.camera_index_var.set(camera_values[0])
+        self.status_label.configure(text=f"Camaras disponibles: {', '.join(camera_values)}")
+
+    def _scan_cameras(self):
+        """Inicia un escaneo de camaras disponibles en background."""
+        if self.scanning_cameras:
+            return
+        self.scanning_cameras = True
+        self.status_label.configure(text="Buscando camaras disponibles...")
+        threading.Thread(target=self._scan_cameras_thread, daemon=True).start()
+
+    def _scan_cameras_thread(self):
+        try:
+            found = self._find_available_cameras()
+            values = [str(v) for v in found] if found else [self.camera_index_var.get() or "0"]
+            self.available_cameras = values
+            self.root.after(0, lambda: self._update_camera_selector(values))
+        finally:
+            self.scanning_cameras = False
+
+    def _try_open_camera(self, index):
+        """Intenta abrir una camara y verifica que entregue frames."""
+        cap = cv2.VideoCapture(index)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                return cap
+        cap.release()
+        return None
+
+    def _open_camera_with_fallback(self, preferred_index):
+        """
+        Abre la camara seleccionada o cae a otra disponible si la principal esta ocupada.
+        
+        Returns:
+            (capture, index_usado) o (None, None) si falla
+        """
+        cap = self._try_open_camera(preferred_index)
+        if cap:
+            return cap, preferred_index
+
+        try:
+            known = [int(v) for v in self.available_cameras if str(v).isdigit()]
+        except Exception:
+            known = []
+
+        fallback_candidates = [idx for idx in known if idx != preferred_index]
+        if not fallback_candidates:
+            fallback_candidates = [idx for idx in self._find_available_cameras() if idx != preferred_index]
+
+        for alt_idx in fallback_candidates:
+            alt_cap = self._try_open_camera(alt_idx)
+            if alt_cap:
+                return alt_cap, alt_idx
+
+        return None, None
+
     def _toggle_camera(self):
         """Activa o desactiva la camara."""
         if not self.camera_active:
@@ -1144,9 +1256,11 @@ class VehicleDetectorApp:
                 self.pipeline.mode = 'camera'
                 self.pipeline.redetection_interval = getattr(config, 'REDETECTION_INTERVAL_CAMERA', 30)
             
+            selected_index = self._get_selected_camera_index()
             self.camera_active = True
             self.btn_camera.configure(text="Detener Camara", fg_color="red")
             self._clear_vehicle_list()
+            self.status_label.configure(text=f"Abriendo camara {selected_index}...")
             
             # Actualizar subtitulo
             self.list_subtitle.configure(text="Click para ver detalle")
@@ -1154,7 +1268,7 @@ class VehicleDetectorApp:
             # Deshabilitar replay
             self.btn_replay.configure(state="disabled")
             
-            threading.Thread(target=self._camera_loop, daemon=True).start()
+            threading.Thread(target=self._camera_loop, args=(selected_index,), daemon=True).start()
         else:
             print("[APP-CAMERA] Deteniendo camara...")
             self.camera_active = False
@@ -1162,16 +1276,28 @@ class VehicleDetectorApp:
             if self.video_capture:
                 self.video_capture.release()
     
-    def _camera_loop(self):
+    def _camera_loop(self, camera_index=0):
         """Loop principal de captura de camara."""
         try:
-            self.video_capture = cv2.VideoCapture(0)
+            self.video_capture, used_index = self._open_camera_with_fallback(camera_index)
             
-            if not self.video_capture.isOpened():
+            if not self.video_capture:
                 print("[APP-ERROR] No se pudo abrir la camara")
-                self.status_label.configure(text="No se pudo abrir la camara")
+                self.status_label.configure(text="No se pudo abrir la camara. Selecciona otro indice.")
+                self.btn_camera.configure(text="Activar Camara", fg_color="#1f6aa5")
                 self.camera_active = False
                 return
+
+            if used_index != camera_index:
+                print(f"[APP-CAMERA] Camara {camera_index} ocupada, usando {used_index}")
+                self.camera_index_var.set(str(used_index))
+                self.status_label.configure(text=f"Camara {camera_index} ocupada, usando {used_index}")
+            else:
+                self.status_label.configure(text=f"Camara {used_index} abierta")
+
+            if str(used_index) not in self.available_cameras:
+                self.available_cameras.append(str(used_index))
+                self.root.after(0, lambda: self._update_camera_selector(self.available_cameras))
             
             print("[APP-CAMERA] Camara abierta\n")
             
@@ -1208,13 +1334,19 @@ class VehicleDetectorApp:
                 time.sleep(0.03)
             
             self.video_capture.release()
+            self.camera_active = False
             print("[APP-CAMERA] Camara detenida\n")
             self.status_label.configure(text="Camara detenida")
+            self.btn_camera.configure(text="Activar Camara", fg_color="#1f6aa5")
             
         except Exception as e:
             error_msg = traceback.format_exc()
             print(f"[APP-ERROR] Error en camara:\n{error_msg}")
+            self.status_label.configure(text="Error en camara. Selecciona otro indice.")
+            if self.video_capture:
+                self.video_capture.release()
             self.camera_active = False
+            self.btn_camera.configure(text="Activar Camara", fg_color="#1f6aa5")
     
     def _apply_camera_highlight(self, frame, detections, highlight_id):
         """
