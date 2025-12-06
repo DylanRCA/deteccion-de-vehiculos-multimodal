@@ -12,7 +12,6 @@ class DatabaseManager:
         Esquema:
         - active_vehicles: Vehiculos dentro del estacionamiento AHORA
         - parking_history: Sesiones completadas (historico)
-        - vehicle_registry: Catalogo de vehiculos conocidos
         
         Args:
             db_path (str): Ruta a la base de datos SQLite
@@ -91,20 +90,6 @@ class DatabaseManager:
                 )
             ''')
             
-            # Tabla 3: Registro de vehiculos conocidos
-            print("[DB-INIT] Creando tabla 'vehicle_registry'...")
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS vehicle_registry (
-                    plate TEXT PRIMARY KEY,
-                    brand TEXT,
-                    color TEXT,
-                    first_seen TIMESTAMP,
-                    last_seen TIMESTAMP,
-                    total_visits INTEGER DEFAULT 0,
-                    avg_duration_minutes INTEGER DEFAULT 0
-                )
-            ''')
-            
             # Indices para queries rapidas
             print("[DB-INIT] Creando indices...")
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_active_plate ON active_vehicles(plate)')
@@ -160,9 +145,6 @@ class DatabaseManager:
                 ''', (plate, track_id, brand, color, entry_time))
                 
                 active_id = cursor.lastrowid
-                
-                # Actualizar registro de vehiculo
-                self._update_vehicle_registry(plate, brand, color, entry_time)
                 
                 print(f"[DB-ENTRY] Entrada registrada - ID: {active_id}")
                 return active_id
@@ -222,9 +204,6 @@ class DatabaseManager:
                 
                 # Eliminar de active_vehicles
                 cursor.execute('DELETE FROM active_vehicles WHERE plate = ?', (plate,))
-                
-                # Actualizar registro
-                self._update_vehicle_registry_on_exit(plate, exit_time, duration_minutes)
                 
                 session = {
                     'id': history_id,
@@ -356,123 +335,6 @@ class DatabaseManager:
                 return [dict(row) for row in rows]
         except Exception as e:
             print(f"[DB-ERROR] Error consultando historial de placa: {str(e)}")
-            return []
-    
-    # ==================== REGISTRO (vehicle_registry) ====================
-    
-    def _update_vehicle_registry(self, plate, brand, color, timestamp):
-        """
-        Actualiza o crea entrada en vehicle_registry al detectar entrada.
-        
-        Args:
-            plate (str): Numero de placa
-            brand (str): Marca
-            color (str): Color
-            timestamp (datetime): Timestamp de la entrada
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Buscar si existe
-                cursor.execute('SELECT * FROM vehicle_registry WHERE plate = ?', (plate,))
-                existing = cursor.fetchone()
-                
-                if existing:
-                    # Actualizar
-                    cursor.execute('''
-                        UPDATE vehicle_registry
-                        SET last_seen = ?,
-                            total_visits = total_visits + 1
-                        WHERE plate = ?
-                    ''', (timestamp, plate))
-                else:
-                    # Crear nuevo
-                    cursor.execute('''
-                        INSERT INTO vehicle_registry (plate, brand, color, first_seen, last_seen, total_visits)
-                        VALUES (?, ?, ?, ?, ?, 1)
-                    ''', (plate, brand, color, timestamp, timestamp))
-                
-        except Exception as e:
-            print(f"[DB-ERROR] Error actualizando registro: {str(e)}")
-    
-    def _update_vehicle_registry_on_exit(self, plate, timestamp, duration_minutes):
-        """
-        Actualiza vehicle_registry al registrar salida (actualiza promedio de duracion).
-        
-        Args:
-            plate (str): Numero de placa
-            timestamp (datetime): Timestamp de salida
-            duration_minutes (int): Duracion de esta sesion
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                
-                cursor.execute('SELECT total_visits, avg_duration_minutes FROM vehicle_registry WHERE plate = ?', (plate,))
-                registry = cursor.fetchone()
-                
-                if registry:
-                    # Calcular nuevo promedio
-                    total_visits = registry['total_visits']
-                    old_avg = registry['avg_duration_minutes'] or 0
-                    
-                    new_avg = ((old_avg * (total_visits - 1)) + duration_minutes) / total_visits
-                    new_avg = int(new_avg)
-                    
-                    cursor.execute('''
-                        UPDATE vehicle_registry
-                        SET last_seen = ?,
-                            avg_duration_minutes = ?
-                        WHERE plate = ?
-                    ''', (timestamp, new_avg, plate))
-                
-        except Exception as e:
-            print(f"[DB-ERROR] Error actualizando registro en salida: {str(e)}")
-    
-    def get_vehicle_stats(self, plate):
-        """
-        Obtiene estadisticas de un vehiculo del registro.
-        
-        Args:
-            plate (str): Numero de placa
-            
-        Returns:
-            dict: Estadisticas del vehiculo o None
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT * FROM vehicle_registry WHERE plate = ?', (plate,))
-                row = cursor.fetchone()
-                return dict(row) if row else None
-        except Exception as e:
-            print(f"[DB-ERROR] Error consultando estadisticas: {str(e)}")
-            return None
-    
-    def get_frequent_visitors(self, limit=10):
-        """
-        Obtiene vehiculos mas frecuentes (top visitantes).
-        
-        Args:
-            limit (int): Numero de resultados
-            
-        Returns:
-            list: Lista de vehiculos ordenados por total_visits
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT * FROM vehicle_registry 
-                    ORDER BY total_visits DESC
-                    LIMIT ?
-                ''', (limit,))
-                
-                rows = cursor.fetchall()
-                return [dict(row) for row in rows]
-        except Exception as e:
-            print(f"[DB-ERROR] Error consultando visitantes frecuentes: {str(e)}")
             return []
     
     def get_today_stats(self):
